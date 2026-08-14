@@ -197,8 +197,10 @@ type Config struct {
 	KubernetesEastWestRangeAnnotationFiltersAppend       []kubernetes.AnnotationFilters     `yaml:"-"`
 	KubernetesAnnotationPredicates                       []kubernetes.AnnotationPredicates  `yaml:"-"`
 	KubernetesAnnotationFiltersAppend                    []kubernetes.AnnotationFilters     `yaml:"-"`
+	KubernetesApplicationAnnotationLabelKey              string                             `yaml:"kubernetes-application-annotation-label"`
 	KubernetesEastWestRangePredicates                    []*eskip.Predicate                 `yaml:"-"`
 	EnableKubernetesExternalNames                        bool                               `yaml:"enable-kubernetes-external-names"`
+	KubernetesExternalNamePreserveHost                   bool                               `yaml:"kubernetes-external-name-preserve-host"`
 	KubernetesOnlyAllowedExternalNames                   bool                               `yaml:"kubernetes-only-allowed-external-names"`
 	KubernetesAllowedExternalNames                       regexpListFlag                     `yaml:"kubernetes-allowed-external-names"`
 	KubernetesRedisServiceNamespace                      string                             `yaml:"kubernetes-redis-service-namespace"`
@@ -573,9 +575,11 @@ func NewConfig() *Config {
 	flag.StringVar(&cfg.KubernetesEastWestRangePredicatesString, "kubernetes-east-west-range-predicates", "", "set the predicates that will be appended to routes identified as to -kubernetes-east-west-range-domains")
 	flag.Var(&cfg.KubernetesAnnotationPredicatesString, "kubernetes-annotation-predicates", "configures predicates appended to non east-west routes of annotated resources. E.g. -kubernetes-annotation-predicates='zone-a=true=Foo() && Bar()' will add 'Foo() && Bar()' predicates to all non east-west routes of ingress or routegroup annotated with 'zone-a: true'. For east-west routes use -kubernetes-east-west-range-annotation-predicates.")
 	flag.Var(&cfg.KubernetesAnnotationFiltersAppendString, "kubernetes-annotation-filters-append", "configures filters appended to non east-west routes of annotated resources. E.g. -kubernetes-annotation-filters-append='zone-a=true=foo() -> bar()' will add 'foo() -> bar()' filters to all non east-west routes of ingress or routegroup annotated with 'zone-a: true'. For east-west routes use -kubernetes-east-west-range-annotation-filters-append.")
+	flag.StringVar(&cfg.KubernetesApplicationAnnotationLabelKey, "kubernetes-application-annotation-label", "", `label key on Kubernetes routing objects used for application annotation, when set adds annotate("Application", <label value>) to routes generated from Kubernetes routing objects`)
 	flag.Var(&cfg.KubernetesEastWestRangeAnnotationPredicatesString, "kubernetes-east-west-range-annotation-predicates", "similar to -kubernetes-annotation-predicates configures predicates appended to east-west routes of annotated resources. See also -kubernetes-east-west-range-domains.")
 	flag.Var(&cfg.KubernetesEastWestRangeAnnotationFiltersAppendString, "kubernetes-east-west-range-annotation-filters-append", "similar to -kubernetes-annotation-filters-append configures filters appended to east-west routes of annotated resources. See also -kubernetes-east-west-range-domains.")
 	flag.BoolVar(&cfg.EnableKubernetesExternalNames, "enable-kubernetes-external-names", false, "only if enabled we allow to use external name services as backends in Ingress")
+	flag.BoolVar(&cfg.KubernetesExternalNamePreserveHost, "kubernetes-external-name-preserve-host", false, "if enabled, skipper does not overwrite the Host header for Ingress backends of Kubernetes service type ExternalName, letting the preserveHost filter and -proxy-preserve-host flag control it instead")
 	flag.BoolVar(&cfg.KubernetesOnlyAllowedExternalNames, "kubernetes-only-allowed-external-names", false, "only accept external name services, route group network backends and route group explicit LB endpoints from an allow list defined by zero or more -kubernetes-allowed-external-name flags")
 	flag.Var(&cfg.KubernetesAllowedExternalNames, "kubernetes-allowed-external-name", "set zero or more regular expressions from which at least one should be matched by the external name services, route group network addresses and explicit endpoints domain names")
 	flag.StringVar(&cfg.KubernetesRedisServiceNamespace, "kubernetes-redis-service-namespace", "", "Sets namespace for redis to be used to lookup endpoints")
@@ -585,7 +589,7 @@ func NewConfig() *Config {
 	flag.StringVar(&cfg.KubernetesValkeyServiceName, "kubernetes-valkey-service-name", "", "Sets name for valkey to be used to lookup endpoints")
 	flag.IntVar(&cfg.KubernetesValkeyServicePort, "kubernetes-valkey-service-port", 6379, "Sets the port for valkey to be used to lookup endpoints")
 	flag.StringVar(&cfg.KubernetesBackendTrafficAlgorithmString, "kubernetes-backend-traffic-algorithm", kubernetes.TrafficPredicateAlgorithm.String(), "sets the algorithm to be used for traffic splitting between backends: traffic-predicate or traffic-segment-predicate")
-	flag.StringVar(&cfg.KubernetesDefaultLoadBalancerAlgorithm, "kubernetes-default-lb-algorithm", kubernetes.DefaultLoadBalancerAlgorithm, "sets the default algorithm to be used for load balancing between backend endpoints, available options: roundRobin, consistentHash, random, powerOfRandomNChoices, weightedRoundRobin")
+	flag.StringVar(&cfg.KubernetesDefaultLoadBalancerAlgorithm, "kubernetes-default-lb-algorithm", kubernetes.DefaultLoadBalancerAlgorithm, "sets the default algorithm to be used for load balancing between backend endpoints, available options: roundRobin, consistentHash, random, powerOfRandomNChoices, weightedRoundRobin, leastRequests")
 	flag.BoolVar(&cfg.KubernetesForceService, "kubernetes-force-service", false, "overrides default Skipper functionality and routes traffic using Kubernetes Services instead of Endpoints")
 	flag.StringVar(&cfg.KubernetesStatusFromService, "kubernetes-status-from-service", "", "when set to <namespace>/<name>, updates Ingress status.loadBalancer.ingress from the referenced service")
 
@@ -1063,7 +1067,9 @@ func (c *Config) ToOptions() skipper.Options {
 		KubernetesEastWestRangeAnnotationFiltersAppend: c.KubernetesEastWestRangeAnnotationFiltersAppend,
 		KubernetesAnnotationPredicates:                 c.KubernetesAnnotationPredicates,
 		KubernetesAnnotationFiltersAppend:              c.KubernetesAnnotationFiltersAppend,
+		KubernetesApplicationAnnotationLabelKey:        c.KubernetesApplicationAnnotationLabelKey,
 		EnableKubernetesExternalNames:                  c.EnableKubernetesExternalNames,
+		KubernetesExternalNamePreserveHost:             c.KubernetesExternalNamePreserveHost,
 		KubernetesOnlyAllowedExternalNames:             c.KubernetesOnlyAllowedExternalNames,
 		KubernetesAllowedExternalNames:                 c.KubernetesAllowedExternalNames,
 		KubernetesRedisServiceNamespace:                c.KubernetesRedisServiceNamespace,

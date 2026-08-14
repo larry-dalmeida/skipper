@@ -42,6 +42,7 @@ type kubeOptionsParser struct {
 	DisableCatchAllRoutes                          bool                              `yaml:"disableCatchAllRoutes"`
 	BackendNameTracingTag                          bool                              `yaml:"backendNameTracingTag"`
 	EnableExternalNames                            bool                              `yaml:"enableExternalNames"`
+	ExternalNamePreserveHost                       bool                              `yaml:"externalNamePreserveHost"`
 	OnlyAllowedExternalNames                       bool                              `yaml:"onlyAllowedExternalNames"`
 	AllowedExternalNames                           []string                          `yaml:"allowedExternalNames"`
 	IngressClass                                   string                            `yaml:"kubernetes-ingress-class"`
@@ -58,6 +59,7 @@ type kubeOptionsParser struct {
 	TopologyZone                                   string                            `yaml:"topology-zone"`
 	KubernetesAnnotationPredicates                 []kubernetes.AnnotationPredicates `yaml:"kubernetesAnnotationPredicates"`
 	KubernetesAnnotationFiltersAppend              []kubernetes.AnnotationFilters    `yaml:"kubernetesAnnotationFiltersAppend"`
+	KubernetesApplicationAnnotationLabelKey        string                            `yaml:"kubernetes-application-annotation-label"`
 	KubernetesEastWestRangeAnnotationPredicates    []kubernetes.AnnotationPredicates `yaml:"kubernetesEastWestRangeAnnotationPredicates"`
 	KubernetesEastWestRangeAnnotationFiltersAppend []kubernetes.AnnotationFilters    `yaml:"kubernetesEastWestRangeAnnotationFiltersAppend"`
 }
@@ -254,6 +256,8 @@ func testFixture(t *testing.T, f fixtureSet) {
 		o.ForwardBackendURL = kop.ForwardBackendURL
 		o.TopologyZone = kop.TopologyZone
 
+		o.KubernetesApplicationAnnotationLabelKey = kop.KubernetesApplicationAnnotationLabelKey
+
 		if kop.BackendTrafficAlgorithm != "" {
 			o.BackendTrafficAlgorithm, err = kubernetes.ParseBackendTrafficAlgorithm(kop.BackendTrafficAlgorithm)
 			if err != nil {
@@ -267,6 +271,7 @@ func testFixture(t *testing.T, f fixtureSet) {
 		}
 
 		o.EnableExternalNames = kop.EnableExternalNames
+		o.ExternalNamePreserveHost = kop.ExternalNamePreserveHost
 		o.OnlyAllowedExternalNames = kop.OnlyAllowedExternalNames
 		o.AllowedExternalNames = aen
 	}

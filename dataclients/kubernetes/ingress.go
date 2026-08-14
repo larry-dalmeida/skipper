@@ -32,24 +32,25 @@ const (
 )
 
 type ingressContext struct {
-	state                *clusterState
-	ingressV1            *definitions.IngressV1Item
-	logger               *logger
-	annotationFilters    []*eskip.Filter
-	annotationPredicate  string
-	annotationBackend    string
-	forwardBackendURL    string
-	enableExternalNames  bool
-	extraRoutes          []*eskip.Route
-	backendWeights       map[string]float64
-	pathMode             PathMode
-	redirect             *redirectInfo
-	hostRoutes           map[string][]*eskip.Route
-	defaultFilters       defaultFilters
-	certificateRegistry  *certregistry.CertRegistry
-	calculateTraffic     func([]*weightedIngressBackend) map[string]backendTraffic
-	zone                 string
-	disableZoneAwareness bool
+	state                    *clusterState
+	ingressV1                *definitions.IngressV1Item
+	logger                   *logger
+	annotationFilters        []*eskip.Filter
+	annotationPredicate      string
+	annotationBackend        string
+	forwardBackendURL        string
+	enableExternalNames      bool
+	externalNamePreserveHost bool
+	extraRoutes              []*eskip.Route
+	backendWeights           map[string]float64
+	pathMode                 PathMode
+	redirect                 *redirectInfo
+	hostRoutes               map[string][]*eskip.Route
+	defaultFilters           defaultFilters
+	certificateRegistry      *certregistry.CertRegistry
+	calculateTraffic         func([]*weightedIngressBackend) map[string]backendTraffic
+	zone                     string
+	disableZoneAwareness     bool
 }
 
 type ingress struct {
@@ -65,6 +66,7 @@ type ingress struct {
 	disableCatchAllRoutes                          bool
 	forceKubernetesService                         bool
 	enableExternalNames                            bool
+	externalNamePreserveHost                       bool
 	backendTrafficAlgorithm                        BackendTrafficAlgorithm
 	defaultLoadBalancerAlgorithm                   string
 	forwardBackendURL                              string
@@ -72,6 +74,7 @@ type ingress struct {
 	kubernetesAnnotationFiltersAppend              []AnnotationFilters
 	kubernetesEastWestRangeAnnotationPredicates    []AnnotationPredicates
 	kubernetesEastWestRangeAnnotationFiltersAppend []AnnotationFilters
+	kubernetesApplicationAnnotationLabel           string
 }
 
 var (
@@ -113,6 +116,7 @@ func newIngress(o Options) *ingress {
 		eastWestRangeDomains:                           o.KubernetesEastWestRangeDomains,
 		eastWestRangePredicates:                        o.KubernetesEastWestRangePredicates,
 		enableExternalNames:                            o.EnableExternalNames,
+		externalNamePreserveHost:                       o.ExternalNamePreserveHost,
 		zone:                                           o.TopologyZone,
 		allowedExternalNames:                           o.AllowedExternalNames,
 		forceKubernetesService:                         o.ForceKubernetesService,
@@ -123,6 +127,7 @@ func newIngress(o Options) *ingress {
 		kubernetesAnnotationFiltersAppend:              o.KubernetesAnnotationFiltersAppend,
 		kubernetesEastWestRangeAnnotationPredicates:    o.KubernetesEastWestRangeAnnotationPredicates,
 		kubernetesEastWestRangeAnnotationFiltersAppend: o.KubernetesEastWestRangeAnnotationFiltersAppend,
+		kubernetesApplicationAnnotationLabel:           o.KubernetesApplicationAnnotationLabelKey,
 	}
 }
 
@@ -158,6 +163,7 @@ func externalNameRoute(
 	svc *service,
 	servicePort *servicePort,
 	allowedNames []*regexp.Regexp,
+	preserveHost bool,
 ) (*eskip.Route, error) {
 	if !isExternalDomainAllowed(allowedNames, svc.Spec.ExternalName) {
 		return nil, fmt.Errorf("%w: %s", errNotAllowedExternalName, svc.Spec.ExternalName)
@@ -169,9 +175,14 @@ func externalNameRoute(
 	}
 
 	u := fmt.Sprintf("%s://%s:%s", scheme, svc.Spec.ExternalName, servicePort.TargetPort)
-	f, err := eskip.ParseFilters(fmt.Sprintf(`setRequestHeader("Host", "%s")`, svc.Spec.ExternalName))
-	if err != nil {
-		return nil, err
+
+	var f []*eskip.Filter
+	if !preserveHost {
+		var err error
+		f, err = eskip.ParseFilters(fmt.Sprintf(`setRequestHeader("Host", "%s")`, svc.Spec.ExternalName))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return &eskip.Route{
@@ -246,6 +257,7 @@ func (ing *ingress) addExtraRoutes(ic *ingressContext, ruleHost, path, pathType 
 				appendAnnotationPredicates(ing.kubernetesAnnotationPredicates, ic.ingressV1.Metadata.Annotations, &route)
 				appendAnnotationFilters(ing.kubernetesAnnotationFiltersAppend, ic.ingressV1.Metadata.Annotations, &route)
 			}
+			prependApplicationAnnotation(ic.ingressV1.Metadata.Labels, ing.kubernetesApplicationAnnotationLabel, &route)
 			ic.addHostRoute(ruleHost, &route)
 			ic.redirect.updateHost(ruleHost)
 		} else {

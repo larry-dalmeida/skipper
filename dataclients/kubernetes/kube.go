@@ -223,6 +223,10 @@ type Options struct {
 	// KubernetesAnnotationFiltersAppend sets filters to append for each annotation key and value
 	KubernetesAnnotationFiltersAppend []AnnotationFilters
 
+	// KubernetesApplicationAnnotationLabelKey, when set, is the Kubernetes routing object label used to add
+	// annotate("Application", <label value>) to generated routes.
+	KubernetesApplicationAnnotationLabelKey string
+
 	// DefaultFiltersDir enables default filters mechanism and sets the location of the default filters.
 	// The provided filters are then applied to all routes.
 	DefaultFiltersDir string
@@ -237,6 +241,11 @@ type Options struct {
 	// EnableExternalNames enables the integration of Kubernetes
 	// Service type ExternalName as backends in Ingress.
 	EnableExternalNames bool
+
+	// ExternalNamePreserveHost disables overwriting the Host header with the
+	// external name of a Service type ExternalName used as backend in Ingress,
+	// letting the preserveHost filter and the -proxy-preserve-host flag control it instead.
+	ExternalNamePreserveHost bool
 
 	// OnlyAllowedExternalNames will enable validation of ingress external names and route groups network
 	// backend addresses, explicit LB endpoints validation against the list of patterns in
@@ -257,7 +266,8 @@ type Options struct {
 	BackendTrafficAlgorithm BackendTrafficAlgorithm
 
 	// DefaultLoadBalancerAlgorithm sets the default algorithm to be used for load balancing between backend endpoints,
-	// available options: roundRobin, consistentHash, random, powerOfRandomNChoices, weightedRoundRobin
+	// available options: roundRobin, consistentHash, random, powerOfRandomNChoices,
+	// weightedRoundRobin, leastRequests
 	DefaultLoadBalancerAlgorithm string
 
 	// ForwardBackendURL allows to use <forward> backend via kubernetes, for example routegroup backend `type: forward`.

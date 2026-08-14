@@ -653,8 +653,9 @@ Example:
 
 ### mtlsSanDNS
 
-This authz filter checks DNS of the SAN value of the provided certificate. You have
-to use `mtlsAuthn()` to verify validity.
+This authz filter checks DNS of the SAN value of the provided
+certificate. It supports exact match and wildcard domain match.
+You have to use `mtlsAuthn()` to verify validity.
 
 Parameters are one or more:
 
@@ -664,6 +665,7 @@ Example:
 
 ```
 * -> mtlsAuthn() ->  mtlsSanDNS("my.host.example") -> "http://10.2.5.21:8080";
+* -> mtlsAuthn() ->  mtlsSanDNS("*.host.example") -> "http://10.2.5.21:8080";
 ```
 
 ### mtlsSanIP
@@ -683,8 +685,9 @@ Example:
 
 ### mtlsSanURI
 
-This authz filter checks URIs of the SAN value of the provided certificate. You have
-to use `mtlsAuthn()` to verify validity.
+This authz filter checks URIs of the SAN value of the provided
+certificate. It supports exact match and globbing. You have to use
+`mtlsAuthn()` to verify validity.
 
 Parameters are one or more:
 
@@ -694,6 +697,7 @@ Example:
 
 ```
 * -> mtlsAuthn() ->  mtlsSanURI("spiffe://my-service.example/app1") -> "http://10.2.5.21:8080";
+* -> mtlsAuthn() ->  mtlsSanURI("spiffe://my-service.example/*") -> "http://10.2.5.21:8080";
 ```
 
 
@@ -1830,6 +1834,16 @@ Examples:
 jwtValidation("https://login.microsoftonline.com/{tenantId}/v2.0")
 ```
 
+To also validate specific claims like `iss` or `aud`, chain with [oidcClaimsQuery](#oidcclaimsquery).
+Note that queries within a single `oidcClaimsQuery` argument are OR-matched, so use separate filters for AND logic:
+
+```
+jwtValidation("https://accounts.google.com")
+-> oidcClaimsQuery("/:@_:iss==\"https://accounts.google.com\"")
+-> oidcClaimsQuery("/:@_:aud==\"123456789\"")
+```
+
+
 #### jwtValidationKeys
 
 The filter works like [jwtValidation](#jwtvalidation) but takes a JWKS URL directly instead of
@@ -2126,6 +2140,7 @@ oauthOidcAnyClaims("https://oidc-provider.example.com",
 ```
 
 When using `secretRef:`, Skipper expects the referenced secret to be available via the configured secrets reader; if the secret cannot be resolved, filter creation fails.
+
 * **Callback URL** The entire path to the callback from the provider on which the token will be received.
     It can be any value which is a subpath on which the filter is applied.
 * **Scopes** The OpenID scopes separated by spaces which need to be specified when requesting the token from the provider.
@@ -2156,6 +2171,7 @@ The filter needs the following parameters:
 * **Client Secret**  Also obtained from the provider
 
 The **Client ID** and **Client Secret** parameters also support reading values from Skipper's secrets registry using the prefix `secretRef:`.
+
 * **Callback URL** The entire path to the callback from the provider on which the token will be received.
     It can be any value which is a subpath on which the filter is applied.
 * **Scopes** The OpenID scopes separated by spaces which need to be specified when requesting the token from the provider.
@@ -2185,6 +2201,7 @@ The filter needs the following parameters:
 * **Client Secret**  Also obtained from the provider
 
 The **Client ID** and **Client Secret** parameters also support reading values from Skipper's secrets registry using the prefix `secretRef:`.
+
 * **Callback URL** The entire path to the callback from the provider on which the token will be received.
     It can be any value which is a subpath on which the filter is applied.
 * **Scopes** The OpenID scopes separated by spaces which need to be specified when requesting the token from the provider.

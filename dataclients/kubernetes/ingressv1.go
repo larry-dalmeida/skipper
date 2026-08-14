@@ -113,7 +113,7 @@ func convertPathRuleV1(
 		}
 	} else if svc.Spec.Type == "ExternalName" {
 		if ic.enableExternalNames {
-			return externalNameRoute(ns, name, host, hostRegexp, svc, servicePort, allowedExternalNames)
+			return externalNameRoute(ns, name, host, hostRegexp, svc, servicePort, allowedExternalNames, ic.externalNamePreserveHost)
 		}
 		return nil, errNotEnabledExternalName
 	} else if forceKubernetesService {
@@ -243,6 +243,8 @@ func (ing *ingress) addEndpointsRuleV1(ic *ingressContext, host string, prule *d
 	if err != nil {
 		ic.logger.Errorf("Failed to apply annotation predicates: %v", err)
 	}
+
+	prependApplicationAnnotation(meta.Labels, ing.kubernetesApplicationAnnotationLabel, endpointsRoute)
 
 	ic.addHostRoute(host, endpointsRoute)
 
@@ -396,7 +398,7 @@ func (ing *ingress) convertDefaultBackendV1(
 		err = nil
 	} else if svc.Spec.Type == "ExternalName" {
 		if ic.enableExternalNames {
-			r, err := externalNameRoute(ns, name, "default", nil, svc, servicePort, ing.allowedExternalNames)
+			r, err := externalNameRoute(ns, name, "default", nil, svc, servicePort, ing.allowedExternalNames, ic.externalNamePreserveHost)
 			return r, err == nil, err
 		}
 		return nil, false, errNotEnabledExternalName
@@ -490,30 +492,32 @@ func (ing *ingress) ingressV1Route(
 
 	redirect.initCurrent(i.Metadata)
 	ic := &ingressContext{
-		state:                state,
-		ingressV1:            i,
-		logger:               logger,
-		annotationFilters:    annotationFilter(i.Metadata, logger),
-		annotationPredicate:  annotationPredicate(i.Metadata),
-		annotationBackend:    annotationBackendString(i.Metadata),
-		forwardBackendURL:    ing.forwardBackendURL,
-		enableExternalNames:  ing.enableExternalNames,
-		extraRoutes:          extraRoutes(i.Metadata),
-		backendWeights:       backendWeights(i.Metadata, logger),
-		pathMode:             pathMode(i.Metadata, ing.pathMode, logger),
-		redirect:             redirect,
-		hostRoutes:           hostRoutes,
-		defaultFilters:       df,
-		certificateRegistry:  r,
-		calculateTraffic:     getBackendTrafficCalculator[*weightedIngressBackend](ing.backendTrafficAlgorithm),
-		zone:                 ing.zone,
-		disableZoneAwareness: i.Metadata.Annotations[trafficZoneAwareAnnotationKey] == "false",
+		state:                    state,
+		ingressV1:                i,
+		logger:                   logger,
+		annotationFilters:        annotationFilter(i.Metadata, logger),
+		annotationPredicate:      annotationPredicate(i.Metadata),
+		annotationBackend:        annotationBackendString(i.Metadata),
+		forwardBackendURL:        ing.forwardBackendURL,
+		enableExternalNames:      ing.enableExternalNames,
+		externalNamePreserveHost: ing.externalNamePreserveHost,
+		extraRoutes:              extraRoutes(i.Metadata),
+		backendWeights:           backendWeights(i.Metadata, logger),
+		pathMode:                 pathMode(i.Metadata, ing.pathMode, logger),
+		redirect:                 redirect,
+		hostRoutes:               hostRoutes,
+		defaultFilters:           df,
+		certificateRegistry:      r,
+		calculateTraffic:         getBackendTrafficCalculator[*weightedIngressBackend](ing.backendTrafficAlgorithm),
+		zone:                     ing.zone,
+		disableZoneAwareness:     i.Metadata.Annotations[trafficZoneAwareAnnotationKey] == "false",
 	}
 
 	var route *eskip.Route
 	if r, ok, err := ing.convertDefaultBackendV1(ic, ing.forceKubernetesService); ok {
 		route = r
 		ic.applyBackend(route)
+		prependApplicationAnnotation(i.Metadata.Labels, ing.kubernetesApplicationAnnotationLabel, r)
 	} else if err != nil {
 		ic.logger.Errorf("Failed to convert default backend: %v", err)
 	}
