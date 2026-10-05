@@ -960,14 +960,14 @@ func TestCacheFilter_ConditionalRevalidation_LastModified_304(t *testing.T) {
 	})
 }
 
-// TestCacheFilter_Revalidation_UsesOriginalRequestPath guards against a bug where
-// background revalidation replayed ctx.Request() instead of ctx.OriginalRequest().
-// When an earlier filter (e.g. modPath) strips a path prefix before cache() runs,
-// ctx.Request() no longer carries the prefix the real route requires, so looping
-// the mutated request back through skipper's own router permanently fails to
-// match any route and the stale entry can never be refreshed. (RouteGroup
-// example: pathSubtree /api/contentful/ + modPath("^/api/contentful", "") before
-// cache().)
+// Guards against a bug where background revalidation replayed ctx.Request()
+// instead of ctx.OriginalRequest().When an earlier filter (e.g. modPath)
+// strips a path prefix before cache() runs, ctx.Request() no longer carries
+// the prefix the real route requires, so looping the mutated request back
+// through skipper's own router permanently fails to match any route
+// and the stale entry can never be refreshed. Example RouteGroup:
+// pathSubtree /api/contentful/ + modPath("^/api/contentful", "") before
+// cache().
 //
 // This exercises revalidationDispatch's self-loopback fallback specifically:
 // FBackendUrl is left unset (empty), the same as a load-balanced or dynamic
@@ -1022,12 +1022,13 @@ func TestCacheFilter_Revalidation_UsesOriginalRequestPath(t *testing.T) {
 	})
 }
 
-// TestCacheFilter_Revalidation_DirectDispatchToBackend covers the force-mode +
-// static-backend case: revalidation should dial ctx.BackendUrl() directly
-// instead of looping back through skipper's own listener. This sidesteps the
-// self-loopback routing failure entirely, regardless of which upstream filter
-// mutated the request. It also asserts the internal revalidateHeader never
-// reaches the real backend on this path, since direct dispatch never re-enters
+// Covers the force-mode + static-backend case:
+// revalidation should dial ctx.BackendUrl() directly
+// instead of looping back through skipper's own listener.
+// This sidesteps the self-loopback routing failure entirely,
+// regardless of which upstream filter mutated the request.
+// It also asserts the internal revalidateHeader never reaches
+// the real backend on this path, since direct dispatch never re-enters
 // skipper's own Request() handler to strip it, and that the wire Host header
 // is rewritten to ctx.OutgoingHost() rather than left as the client-facing
 // Host a real inbound request would carry.
@@ -1089,11 +1090,9 @@ func TestCacheFilter_Revalidation_DirectDispatchToBackend(t *testing.T) {
 	})
 }
 
-// TestCacheFilter_Revalidation_LBBackendFallsBackToLoopback covers a
-// load-balanced or dynamic backend: ctx.BackendUrl() is empty (per its own
-// doc comment, there's no single resolvable URL to dial), so even in force
-// mode revalidation must still fall back to self-loopback rather than
-// breaking on an empty host.
+// Covers a oad-balanced or dynamic backend: ctx.BackendUrl() is empty (per its own
+// doc comment, there's no single resolvable URL to dial), so even in force mode
+// revalidation must still fall back to self-loopback rather than breaking on an empty host.
 func TestCacheFilter_Revalidation_LBBackendFallsBackToLoopback(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		f := newTestFilter(t, time.Millisecond, 15*time.Second, time.Hour)
@@ -1142,8 +1141,7 @@ func TestCacheFilter_Revalidation_LBBackendFallsBackToLoopback(t *testing.T) {
 	})
 }
 
-// TestCacheFilter_Revalidation_RFCMode_StaleServedAndRevalidated covers RFC
-// mode background revalidation: resolveSWR honors the response's
+// Covers RFC mode background revalidation: resolveSWR honors the response's
 // stale-while-revalidate directive (RFC 5861 §3), giving an RFC-mode entry a
 // non-zero SWR window. BackendUrl() is set but must still be ignored
 // (self-loopback) per revalidationDispatch's RFC-mode gating.
@@ -1190,8 +1188,7 @@ func TestCacheFilter_Revalidation_RFCMode_StaleServedAndRevalidated(t *testing.T
 	})
 }
 
-// TestRevalidationDispatch_RFCModeIgnoresBackendUrl is a direct unit test of
-// revalidationDispatch's mode gating, not an integration test through
+// Test of revalidationDispatch's mode gating, not an integration test through
 // Request()/Response() (see TestCacheFilter_Revalidation_RFCMode_StaleServedAndRevalidated
 // for that). RFC mode always ignores BackendUrl() because a Response()-filter
 // positioned after cache() could rewrite Cache-Control, and only the
@@ -1218,10 +1215,9 @@ func TestRevalidationDispatch_RFCModeIgnoresBackendUrl(t *testing.T) {
 	}
 }
 
-// TestRevalidationDispatch_ForceModeUsesBackendUrl is the force-mode
-// counterpart: with a resolvable static backend, dispatch should go directly
-// there using ctx.Request() (not ctx.OriginalRequest()), since ctx.Request()
-// is what earlier filters already transformed into the backend-ready form.
+// Force-mode counterpart: with a resolvable static backend,
+// dispatch should go directly there using ctx.Request() (not ctx.OriginalRequest()),
+// since ctx.Request() is what earlier filters already transformed into the backend-ready form.
 // It should also report ctx.OutgoingHost() as the Host header to send, not
 // the client-facing Host ctx.Request() still carries.
 func TestRevalidationDispatch_ForceModeUsesBackendUrl(t *testing.T) {
