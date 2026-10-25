@@ -411,6 +411,22 @@ func (f *cacheFilter) updateLRUBytesGauge(ctx filters.FilterContext) {
 	}
 }
 
+// familyOf returns the route family for a route id shaped "<family>__<locale>"
+// (see the harness route catalogue). Any other route id maps to "other", so the
+// family label stays bounded by the configured routes and never carries a path.
+func familyOf(routeID string) string {
+	if i := strings.Index(routeID, "__"); i > 0 {
+		return routeID[:i]
+	}
+	return "other"
+}
+
+func (f *cacheFilter) incFamilyResult(family, result string) {
+	if p, ok := f.metrics.(interface{ IncCacheFamilyResult(string, string) }); ok {
+		p.IncCacheFamilyResult(family, result)
+	}
+}
+
 // Request checks the cache. On a hit it calls ctx.Serve() to short-circuit the
 // backend roundtrip. On a stale hit it serves stale and fires a background
 // revalidation. On a miss it stores the computed key in the state bag so
@@ -496,6 +512,7 @@ func (f *cacheFilter) Request(ctx filters.FilterContext) {
 		tagSpan(ctx, cacheStatusStale, -1)
 		setAgeHeader(rsp, entry, now)
 		f.metrics.IncCounter("cache.stale")
+		f.incFamilyResult(familyOf(ctx.RouteId()), "stale")
 		if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
 			p.IncCacheResult("stale", statusCodeClass(entry.StatusCode))
 		}
@@ -540,6 +557,7 @@ func (f *cacheFilter) Request(ctx filters.FilterContext) {
 	tagSpan(ctx, cacheStatusHit, max(0, entry.TTL-time.Since(entry.CreatedAt)).Milliseconds())
 	setAgeHeader(rsp, entry, time.Now())
 	f.metrics.IncCounter("cache.hit")
+	f.incFamilyResult(familyOf(ctx.RouteId()), "hit")
 	if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
 		p.IncCacheResult("hit", statusCodeClass(entry.StatusCode))
 	}
@@ -708,6 +726,7 @@ func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
 			tagSpan(ctx, cacheStatusStale, -1)
 			setAgeHeader(staleRsp, cr.stored, time.Now())
 			f.metrics.IncCounter("cache.stale")
+			f.incFamilyResult(familyOf(ctx.RouteId()), "stale")
 			if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
 				p.IncCacheResult("stale", statusCodeClass(cr.stored.StatusCode))
 			}
@@ -770,6 +789,7 @@ func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
 		rsp.Header.Set(cacheStatusHeader, cacheStatusMiss)
 		tagSpan(ctx, cacheStatusMiss, -1)
 		f.metrics.IncCounter("cache.miss")
+		f.incFamilyResult(familyOf(ctx.RouteId()), "miss")
 		if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
 			p.IncCacheResult("miss", statusCodeClass(entry.StatusCode))
 		}
@@ -870,12 +890,14 @@ func (f *cacheFilter) Response(ctx filters.FilterContext) {
 		rsp.Header.Set(cacheStatusHeader, cacheStatusMiss)
 		tagSpan(ctx, cacheStatusMiss, -1)
 		f.metrics.IncCounter("cache.miss")
+		f.incFamilyResult(familyOf(ctx.RouteId()), "miss")
 		return
 	}
 
 	rsp.Header.Set(cacheStatusHeader, cacheStatusMiss)
 	tagSpan(ctx, cacheStatusMiss, -1)
 	f.metrics.IncCounter("cache.miss")
+	f.incFamilyResult(familyOf(ctx.RouteId()), "miss")
 
 	// Vary: * means every response is unique — never cache.
 	varyHeader := rsp.Header.Get("Vary")
