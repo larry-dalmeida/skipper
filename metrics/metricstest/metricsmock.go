@@ -313,6 +313,22 @@ func (m *MockMetrics) IncCacheFamilyResult(family, result string) {
 	m.IncCounter(fmt.Sprintf("cache_family_result.%s.%s", family, result))
 }
 
+// IncCacheFamilyReval mirrors skipper_cache_family_reval_total{family,outcome}.
+func (m *MockMetrics) IncCacheFamilyReval(family, outcome string) {
+	m.IncCounter(fmt.Sprintf("cache_family_reval.%s.%s", family, outcome))
+}
+
+// ObserveCacheOriginDuration mirrors skipper_cache_origin_duration_seconds{family,status_class}
+// by recording the observation count under a per-family/status-class counter.
+func (m *MockMetrics) ObserveCacheOriginDuration(family, statusClass string, seconds float64) {
+	m.IncCounter(fmt.Sprintf("cache_origin_duration.%s.%s", family, statusClass))
+}
+
+// IncOriginCacheControl mirrors skipper_cache_origin_cache_control_total{cache_control}.
+func (m *MockMetrics) IncOriginCacheControl(directive string) {
+	m.IncCounter(fmt.Sprintf("cache_origin_cache_control.%s", directive))
+}
+
 // SetCacheLRUEntries mirrors skipper_cache_lru_entries{route}.
 func (m *MockMetrics) SetCacheLRUEntries(route string, entries float64) {
 	m.UpdateGauge(fmt.Sprintf("cache_lru_entries.%s", route), entries)

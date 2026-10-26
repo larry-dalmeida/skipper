@@ -82,8 +82,11 @@ type Prometheus struct {
 	cacheLRUBytesM             *prometheus.GaugeVec
 	cacheStorageErrorTotalM    *prometheus.CounterVec
 	cacheLRUEntriesM           *prometheus.GaugeVec
-	cacheLRUCapacityBytesM     prometheus.Gauge
 	cacheFamilyResultTotalM    *prometheus.CounterVec
+	cacheFamilyRevalTotalM     *prometheus.CounterVec
+	cacheOriginDurationM       *prometheus.HistogramVec
+	cacheOriginCCTotalM        *prometheus.CounterVec
+	cacheLRUCapacityBytesM     prometheus.Gauge
 	cacheFirstHitSecondsM      prometheus.Gauge
 	cacheStartedAt             time.Time
 	cacheFirstHitOnce          sync.Once
@@ -372,20 +375,43 @@ func NewPrometheus(opts Options) *Prometheus {
 		Help:      "Current LRU cache entry count per route.",
 	}, []string{"route"}))
 
-	p.cacheLRUCapacityBytesM = register(p, prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: namespace,
-		Subsystem: "cache",
-		Name:      "lru_capacity_bytes",
-		Help:      "Configured L1 (LRU) cache capacity in bytes.",
-	}))
-
-	// result is hit/miss/stale.
+	// family is the route family (route id prefix before "__"), bounded by configured routes.
+	// result is hit/miss/stale; outcome is started/success/failed/dropped.
 	p.cacheFamilyResultTotalM = register(p, prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Subsystem: "cache",
 		Name:      "family_result_total",
 		Help:      "Cache results by route family and result (hit/miss/stale).",
 	}, []string{"family", "result"}))
+
+	p.cacheFamilyRevalTotalM = register(p, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "cache",
+		Name:      "family_reval_total",
+		Help:      "Background revalidation outcomes by route family (started/success/failed/dropped).",
+	}, []string{"family", "outcome"}))
+
+	p.cacheOriginDurationM = register(p, prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: namespace,
+		Subsystem: "cache",
+		Name:      "origin_duration_seconds",
+		Help:      "Origin fetch duration performed by the cache filter (cold-miss coalescing and revalidation) by route family and status class (2xx/3xx/4xx/5xx/error/other).",
+		Buckets:   opts.HistogramBuckets,
+	}, []string{"family", "status_class"}))
+
+	p.cacheOriginCCTotalM = register(p, prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "cache",
+		Name:      "origin_cache_control_total",
+		Help:      "Origin responses by Cache-Control directive, counted once per directive per response.",
+	}, []string{"cache_control"}))
+
+	p.cacheLRUCapacityBytesM = register(p, prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: "cache",
+		Name:      "lru_capacity_bytes",
+		Help:      "Configured L1 (LRU) cache capacity in bytes.",
+	}))
 
 	p.cacheFirstHitSecondsM = register(p, prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -659,6 +685,11 @@ func (p *Prometheus) SetCacheLRUBytes(route string, bytes float64) {
 	p.cacheLRUBytesM.WithLabelValues(route).Set(bytes)
 }
 
+// SetCacheLRUEntries sets the LRU entry count gauge for a route.
+func (p *Prometheus) SetCacheLRUEntries(route string, entries float64) {
+	p.cacheLRUEntriesM.WithLabelValues(route).Set(entries)
+}
+
 // IncCacheFamilyResult increments skipper_cache_family_result_total. The first hit
 // also sets skipper_cache_first_hit_seconds once per process.
 func (p *Prometheus) IncCacheFamilyResult(family, result string) {
@@ -670,9 +701,19 @@ func (p *Prometheus) IncCacheFamilyResult(family, result string) {
 	}
 }
 
-// SetCacheLRUEntries sets the LRU entry count gauge for a route.
-func (p *Prometheus) SetCacheLRUEntries(route string, entries float64) {
-	p.cacheLRUEntriesM.WithLabelValues(route).Set(entries)
+// IncCacheFamilyReval increments skipper_cache_family_reval_total.
+func (p *Prometheus) IncCacheFamilyReval(family, outcome string) {
+	p.cacheFamilyRevalTotalM.WithLabelValues(family, outcome).Inc()
+}
+
+// ObserveCacheOriginDuration records an origin fetch duration in seconds.
+func (p *Prometheus) ObserveCacheOriginDuration(family, statusClass string, seconds float64) {
+	p.cacheOriginDurationM.WithLabelValues(family, statusClass).Observe(seconds)
+}
+
+// IncOriginCacheControl increments skipper_cache_origin_cache_control_total.
+func (p *Prometheus) IncOriginCacheControl(directive string) {
+	p.cacheOriginCCTotalM.WithLabelValues(directive).Inc()
 }
 
 // SetCacheLRUCapacity sets the configured L1 capacity gauge.
