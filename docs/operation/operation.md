@@ -322,6 +322,14 @@ To monitor skipper we recommend the following queries:
 - P99 response filter duration (depends on label selector): `histogram_quantile(0.99, sum(rate(skipper_filter_response_duration_seconds_bucket{application="skipper-ingress"}[1m])) by (le) )`
 - If you use Kubernetes limits or Linux cgroup CFS quotas (depends on label selector): `sum(rate(container_cpu_cfs_throttled_periods_total{container_name="skipper-ingress"}[1m]))`
 
+#### Cache filter metrics
+
+When the cache filter is active, the following labeled metrics are exposed:
+
+- `skipper_cache_result_total{result="...", code_class="2xx|4xx|5xx|other|n/a"}` - Counter for cache-related outcomes by result type and HTTP status code class. `result` covers the same outcomes as the flat `skipper_custom_total{key="cache.*"}` counters below — `hit`, `miss`, `stale`, `storage_error`, `coalesce_error`, `coalesce_bypass`, `coalesce_bypass_error`, and, when an L2 (Valkey) store is configured, `l1_hit`, `l2_hit`, `l2_miss`, `l2_get_error`, `l2_set_fallback`. `code_class` is only meaningful for outcomes with a cached response in hand (`hit`, `miss`, `stale`, `l1_hit`, `l2_hit`, `l2_set_fallback`); for outcomes with no response to classify (`storage_error`, `coalesce_error`, `coalesce_bypass`, `coalesce_bypass_error`, `l2_miss`, `l2_get_error`) it is the literal string `n/a`. A rising `hit`/`4xx` or `hit`/`5xx` series indicates the cache is serving an error response as a hit — investigate the upstream response and cache-control directives for that route. Cardinality is bounded by the number of distinct (result, code_class) pairs actually emitted.
+- `skipper_cache_lru_bytes{route="..."}` - Gauge for per-route LRU (L1) cache storage consumption in bytes, updated on every hit, miss, and stale serve. Cardinality bounded by the number of distinct routes.
+- The flat-key counters `skipper_custom_total{key="cache.hit"}`, `cache.miss`, `cache.stale`, and the rest of the `cache.*` keys above are the primary, directly-emitted metrics — `skipper_cache_result_total`/`skipper_cache_lru_bytes` are an additional labeled breakdown of the same underlying events, not a replacement for them.
+
 You may add static metrics labels like `version` using Prometheus [relabeling feature](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#relabel_config).
 
 ### Prometheus native histograms
@@ -2058,6 +2066,16 @@ restore write-around behaviour. Note: on L2 write errors (`l2_set_fallback`), L1
 is always used as a fallback regardless of `--cache-l1-ttl`; L2 read errors
 (`l2_get_error`) are treated as cache misses.
 
+Background revalidation updates the local L1 on successful storage too. Before
+executing a queued refresh, the worker silently checks its exact variant key:
+if a fresh entry was stored since that job was queued, the redundant fetch is
+skipped. Failed refreshes do not renew the entry timestamp, so queued work can
+retry. This is local queue suppression, not fleet-wide refresh coordination.
+
+A conditional `304 Not Modified` response is never stored as a standalone
+representation. Loopback revalidation leaves the previous body intact until
+the refresh worker merges the validator response's metadata and renews the entry.
+
 When an upstream responds successfully to an unsafe method (`POST`, `PUT`, `DELETE`, `PATCH`),
 the filter removes the cached entry for that URL from both L2 and the local L1.
 Only the local process's L1 is cleared — other Skipper processes in the fleet retain their
@@ -2117,12 +2135,36 @@ flowchart TD
 - `cache.hit`: Counter, request served from cache without contacting the upstream
 - `cache.miss`: Counter, request not in cache; upstream was contacted
 - `cache.stale`: Counter, stale entry served while background revalidation was enqueued
-- `cache.coalesce_error`: Counter, singleflight cold-miss fetch returned an error
+- `cache.coalesce_error`: Counter, cold-miss dispatch preparation or fetch failed,
+  or an invalid backend URL required pipeline fallback
 - `cache.coalesce_bypass`: Counter, a concurrent cold-miss request's response wasn't
   storeable and no `keyHeaders`/`Vary` proof of matching identity was available, so
   it performed its own fetch instead of reusing another request's in-flight response
 - `cache.coalesce_bypass_error`: Counter, an independent bypass fetch (see
-  `cache.coalesce_bypass`) returned an error
+  `cache.coalesce_bypass`) returned a transport or body-read error. Bypass
+  responses are buffered before serving, preserving their body after the
+  origin stream closes; an incomplete body is not served as a successful response.
+- `cache.coalesce_wait_duration`: Histogram, time from issuing a cold-miss singleflight
+  call to the result being available — near-zero for the leader (it computes the result
+  itself), the leader's real fetch time for followers waiting on it
+
+**Prometheus cache outcome metrics:**
+
+- `skipper_cache_route_result_total{route,result}`: Counter for cache `hit`, `miss`,
+  and `stale` results, labeled with the route ID. Cardinality scales with the number
+  of routes (the same per-route precedent as `skipper_cache_lru_entries{route}`).
+- `skipper_cache_first_hit_seconds`: Gauge for seconds from metrics initialization
+  to the first cache hit in this process; remains zero until a hit occurs.
+
+Derive route families at query time for route IDs using the `<family>__<suffix>`
+convention, for example:
+
+```promql
+sum by (family, result) (label_replace(rate(skipper_cache_route_result_total[5m]), "family", "$1", "route", "(.+?)__.*"))
+```
+
+Use recording rules or adjust the regular expression for a different route naming
+convention.
 
 **LRU (always active):**
 
@@ -2135,13 +2177,30 @@ flowchart TD
 - `cache.reval_queue_depth`: Gauge, current number of pending revalidation jobs in the queue (sampled every 10s)
 - `cache.reval_wait_duration`: Histogram, time a revalidation job spent waiting in the queue before the worker picked it up
 - `cache.reval_dropped`: Counter, revalidation jobs dropped because the queue was full or body read failed
-- `cache.reval_error`: Counter, background revalidation fetch failures
+- `cache.reval_error`: Counter, background revalidation preparation or fetch
+  failures, or an invalid backend URL required pipeline fallback
 - `cache.reval_duration`: Histogram, end-to-end duration of each background revalidation job
-- `cache.reval_backend_dispatch`: Counter, revalidation fetches sent directly to the
-  backend, bypassing skipper's proxy pipeline (force mode, static backend
-  only) - so they're invisible to `MeasureBackend*` metrics and the access
-  log. Self-loopback revalidations aren't counted here since they go
-  through the listener normally.
+- `cache.reval_backend_dispatch`: Counter, background revalidation fetches sent
+  directly to the backend (force mode, static backend only). Direct-dispatched
+  cold-miss (coalesced) fetches are not counted and have no dedicated counter.
+  Both bypass Skipper's proxy pipeline, so these origin requests are invisible
+  to `MeasureBackend*` metrics and the access log. Self-loopback revalidations
+  aren't counted here since they go through the listener normally.
+
+**Cache origin timeouts:** cold-miss and background cache fetches use
+`--timeout-backend` for TCP dialing, `--tls-timeout-backend` for TLS handshakes,
+`--response-header-timeout-backend` for response headers, and
+`--expect-continue-timeout-backend` for 100-Continue waits. Zero response-header
+and expect-continue settings use the proxy defaults (60s and 30s respectively).
+The dial timeout is not a whole-request/body deadline. Eligible SIE entries
+survive failed fetches without timestamp renewal and can be replaced on recovery.
+
+Static force-mode direct dispatch still bypasses later request filters, backend
+proxy access-log/round-trip metrics, proxy retry/route-specific timeout handling,
+and proxy-specific transport/TLS customization. It uses a separate HTTP client
+with system trust and its existing redirect/compression behavior; it does not
+imply full proxy-executor equivalence. Required request/response filters must be
+positioned before `cache()` as described in the filter reference.
 
 **L2 (if Valkey or Redis is configured):**
 
@@ -2150,7 +2209,10 @@ flowchart TD
 - `cache.l2_get_error`: Counter, L2 Get errors — request treated as a cache miss, fetched from origin
 - `cache.l2_set_fallback`: Counter, L2 Set errors — entry written to L1 only (not L2)
 - `cache.l2_hit`: Counter, successful L2 Get (entry returned from L2); L1 is warmed as a side-effect when `--cache-l1-ttl > 0`
+- `cache.l2_get_duration`: Histogram, time of the underlying Valkey/Redis `Get` round-trip, on every call (hit, miss, or error) — including internal lookups like the Vary-sentinel check
+- `cache.l2_set_duration`: Histogram, time of the underlying Valkey/Redis `SetWithExpire` round-trip, on every call (success or fallback)
 - `cache.storage_error`: Counter, any storage operation (Set or Delete) failed — covers both L2 failures and L1 eviction-path errors; the request is still served correctly
+- `skipper_cache_storage_error_total{backend="l1|l2", op="get|set|delete"}`: Counter, labeled breakdown of storage errors by backend and operation, attributed at the point in `LRUStorage`/`L2Storage` where the backend is actually known. Also increments the flat `cache.storage_error` counter above and the labeled `skipper_cache_result_total{result="storage_error",code_class="n/a"}`, so existing consumers of either see no change — this is purely an additional breakdown. `backend="l2", op="delete"` always reports the real underlying failure, since `L2Storage.Delete` only ever returns `nil` to its caller regardless of whether the Valkey delete succeeded (L1 delete always runs); a generic `Storage.Set`/`Storage.Delete` failure from code that isn't `LRUStorage` or `L2Storage` (e.g. a test double) cannot be attributed and records nothing here.
 
 **OpenTracing span tags (set on every request when a span is active):**
 
