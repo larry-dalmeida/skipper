@@ -2100,6 +2100,15 @@ added by an earlier filter, is not stored or shared unless it is `public`/`must-
 apply once on cold misses and background refreshes. HEAD requests other than `200` freshening never create or replace
 the stored GET entry.
 
+All `Vary` response field lines contribute to variant selection
+([RFC 9111 §4.1](https://www.rfc-editor.org/rfc/rfc9111#section-4.1)).
+Cold misses, response processing and background refreshes store each representation
+under its variant key. Matching configured `keyHeaders` does not bypass the
+additional Vary dimensions. Cacheable mismatched followers regroup by variant.
+The filter owns a snapshot of the filtered request headers at `cache()` for
+variant selection and queued refreshes; this is separate from the original
+request replay used to rerun routing and request filters.
+
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with
 `--cache-l1-max-memory-bytes` (or programmatically via `skipper.Options.ResponseCacheMaxMemoryBytes`).

@@ -241,7 +241,7 @@ func TestCacheFilter_HEADRefreshSkipped(t *testing.T) {
 		return nil, nil
 	}
 	req := httptest.NewRequest(http.MethodHead, "http://example.org/resource", nil)
-	f.enqueueRevalidation("key", req, "http://origin.example", "")
+	f.enqueueRevalidation("key", "key", req, snapshotCacheIdentity(req), "http://origin.example", "")
 	f.doRevalidate("key", req, "", "")
 	m.WithCounters(func(counters map[string]int64) {
 		if counters["cache.reval_dropped"] != 2 {
