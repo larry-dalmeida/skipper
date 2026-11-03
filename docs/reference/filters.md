@@ -4267,8 +4267,15 @@ The key is derived from route ID + scheme + host + path + query string,
 hashed with SHA-256 for uniform shard distribution.
 Route ID is included so entries from different routes never collide when sharing
 the same storage instance. Additional request headers can be folded in via
-`keyHeaders`. Without `keyHeaders`, all requests to the same path share one
-cache entry regardless of caller identity.
+`keyHeaders`. Cacheable `Vary` response dimensions additionally isolate stored
+variants and concurrent cold-miss followers, even when `keyHeaders` is set.
+Vary identity uses an owned snapshot of the filtered headers at `cache()`,
+including for queued refreshes. Loopback fetches separately replay the original
+request so routing and preceding request filters still run normally.
+Without `keyHeaders` or an applicable `Vary` response header, all requests to the
+same path share one cache entry regardless of caller identity.
+See the [operation guide](../operation/operation.md#cache) for
+variant storage and process-local coalescing.
 
 **Safety**
 
@@ -4294,11 +4301,11 @@ matching the same key. It has no awareness of other filters in the chain.
   response before enabling force mode on any authenticated route.
 * **Coalescing safety.** Concurrent cold-miss requests to the same key share a
   single upstream fetch only when it's safe to reuse: safe means the response
-  is one `storeDecision` would also persist for later requests — not just the
+  matches the follower's Vary dimensions and can be persisted for later requests — not just the
   `private`/`no-store`/`Authorization` cases named above, but any response
   that isn't storeable for any reason (e.g. no explicit freshness directive
   and nothing to derive a heuristic TTL from). A request may still reuse an
-  unsafe response if its identity is already proven to match: either
+  unsafe response if its Vary dimensions match and its identity is already proven to match: either
   `keyHeaders` puts every request on this key under the same values (only as
   reliable as the operator's own `keyHeaders` choice — a header left out of
   it isn't covered), or the response's own `Vary` header names a dimension

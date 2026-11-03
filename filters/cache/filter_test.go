@@ -5210,9 +5210,8 @@ func TestCacheFilter_Coalesce_VaryMismatch_IndependentFetch(t *testing.T) {
 	mockMetrics := &metricstest.MockMetrics{}
 	f.metrics = mockMetrics
 
-	mc := &missCounting{Storage: f.storage}
-	mc.wg.Add(2 * perSession)
-	f.storage = mc
+	var joined sync.WaitGroup
+	joined.Add(2 * perSession)
 
 	var fetchCount atomic.Int64
 	fetchStarted := make(chan struct{})
@@ -5222,7 +5221,7 @@ func TestCacheFilter_Coalesce_VaryMismatch_IndependentFetch(t *testing.T) {
 	f.fetch = func(req *http.Request) (*http.Response, error) {
 		fetchCount.Add(1)
 		fetchStartedOnce.Do(func() { close(fetchStarted) })
-		mc.wg.Wait()
+		joined.Wait()
 		<-releaseAll
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -5252,6 +5251,7 @@ func TestCacheFilter_Coalesce_VaryMismatch_IndependentFetch(t *testing.T) {
 			defer wg.Done()
 			ctx := newCtx("GET", url, "")
 			ctx.FRequest.Header.Set("X-Session-Id", session)
+			ctx.FRequest = ctx.FRequest.WithContext(&coalesceBarrierContext{Context: ctx.FRequest.Context(), joined: &joined})
 			f.Request(ctx)
 			results[i] = ctx
 		}()
@@ -5261,16 +5261,11 @@ func TestCacheFilter_Coalesce_VaryMismatch_IndependentFetch(t *testing.T) {
 	close(releaseAll)
 	wg.Wait()
 
-	if got := fetchCount.Load(); got < 2 {
-		t.Fatalf("expected at least 2 fetches (Vary-mismatched sessions can never share), got %d", got)
-	}
 	// Only the leader's session group shares for free; the losing group's bypass
 	// fetches aren't coalesced with each other (bypass has no singleflight of its
-	// own), so worst case is 1 (leader) + perSession (losing group). This bounds
-	// safety, not efficiency for the losing group — inherent to one coalesce()
-	// key per burst.
-	if got := fetchCount.Load(); got > perSession+2 {
-		t.Fatalf("expected at most one session's worth of independent fetches plus the leader's, got %d", got)
+	// own), so expect 1 leader + perSession independent fetches.
+	if got := fetchCount.Load(); got != perSession+1 {
+		t.Fatalf("expected %d fetches, got %d", perSession+1, got)
 	}
 	mockMetrics.WithCounters(func(counters map[string]int64) {
 		if got, want := counters["cache.coalesce_bypass"], fetchCount.Load()-1; got != want {
