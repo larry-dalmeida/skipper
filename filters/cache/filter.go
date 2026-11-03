@@ -598,7 +598,7 @@ func cacheIdentity(ctx filters.FilterContext) *http.Request {
 // that isn't the one who fetched it - a coalesce follower, or
 // background revalidation triggered by someone else's request
 func (f *cacheFilter) storeDecision(req *http.Request, statusCode int, header http.Header, d cacheDirectives) (ttl time.Duration, store bool) {
-	if header.Get("Vary") == "*" {
+	if slices.Contains(parseVaryNames(header.Values("Vary")...), "*") {
 		return 0, false
 	}
 	// RFC mode only: no-store and private are semantic blockers (RFC 9111 §5.2.2).
@@ -744,7 +744,7 @@ func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
 		// independently.
 		sameVaryDimension := len(cr.varyNames) > 0 && varyKey("", identity, cr.varyNames) == varyKey("", cr.leaderIdentity, cr.varyNames)
 		varyMatches := len(cr.varyNames) == 0 || sameVaryDimension
-		identityMatchesLeader := varyMatches && (len(f.keyHeaders) > 0 || sameVaryDimension)
+		identityMatchesLeader := !slices.Contains(cr.varyNames, "*") && varyMatches && (len(f.keyHeaders) > 0 || sameVaryDimension)
 		if req != cr.leaderReq && (!varyMatches || !cr.storeable && !identityMatchesLeader) {
 			f.metrics.IncCounter("cache.coalesce_bypass")
 			if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {

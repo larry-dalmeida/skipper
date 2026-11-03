@@ -2108,6 +2108,8 @@ additional Vary dimensions. Cacheable mismatched followers regroup by variant.
 The filter owns a snapshot of the filtered request headers at `cache()` for
 variant selection and queued refreshes; this is separate from the original
 request replay used to rerun routing and request filters.
+`Vary: *` on any field line prevents both storage and follower sharing, including
+in force mode and when `keyHeaders` match. Each follower fetches independently.
 
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with

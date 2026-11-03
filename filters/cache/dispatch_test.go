@@ -389,38 +389,65 @@ func TestCacheFilter_DispatchParity(t *testing.T) {
 
 func TestCacheFilter_DispatchWildcardNotStored(t *testing.T) {
 	for _, backend := range []string{"", "https://origin.example"} {
-		t.Run(backend, func(t *testing.T) {
-			f := newTestFilter(t, time.Minute, 15*time.Second, time.Minute)
-			ctx := &filtertest.Context{
-				FRequest:    httptest.NewRequest("GET", "http://client.example/item", nil),
-				FBackendUrl: backend, FStateBag: make(map[string]any),
-			}
-			ctx.FOriginalRequest = ctx.FRequest
-			var calls int
-			f.fetch = func(*http.Request) (*http.Response, error) {
-				calls++
-				resp := upstreamResponseCC(http.StatusOK, "unique", "public, max-age=60")
-				resp.Header.Set("Vary", "*")
-				return resp, nil
-			}
-			f.coalesce(ctx, "key")
-			if !ctx.FServed {
-				t.Fatal("cold miss not served")
-			}
-			ctx.FResponse.Body.Close()
-			source, destination, host := f.requestDispatch(ctx, "cache.reval_error")
-			f.doRevalidate("key", source, destination, host)
-			if calls != 2 {
-				t.Fatalf("fetches = %d, want 2", calls)
-			}
-			if entry, err := f.storage.Get(context.Background(), "key"); entry != nil || err != nil {
-				t.Fatalf("wildcard response stored: entry=%+v err=%v", entry, err)
-			}
-		})
+		for _, vary := range [][]string{{"*"}, {"Accept-Language", "*"}, {"Accept-Language, *"}} {
+			t.Run(backend+"/"+strings.Join(vary, ";"), func(t *testing.T) {
+				f := newTestFilter(t, time.Minute, 15*time.Second, time.Minute)
+				ctx := &filtertest.Context{
+					FRequest:    httptest.NewRequest("GET", "http://client.example/item", nil),
+					FBackendUrl: backend, FStateBag: make(map[string]any),
+				}
+				ctx.FOriginalRequest = ctx.FRequest
+				var calls int
+				f.fetch = func(*http.Request) (*http.Response, error) {
+					calls++
+					resp := upstreamResponseCC(http.StatusOK, "unique", "public, max-age=60")
+					resp.Header["Vary"] = vary
+					return resp, nil
+				}
+				f.coalesce(ctx, "key")
+				if !ctx.FServed {
+					t.Fatal("cold miss not served")
+				}
+				ctx.FResponse.Body.Close()
+				source, destination, host := f.requestDispatch(ctx, "cache.reval_error")
+				f.doRevalidate("key", source, destination, host)
+				if calls != 2 {
+					t.Fatalf("fetches = %d, want 2", calls)
+				}
+				if entry, err := f.storage.Get(context.Background(), "key"); entry != nil || err != nil {
+					t.Fatalf("wildcard response stored: entry=%+v err=%v", entry, err)
+				}
+				ctx = &filtertest.Context{
+					FRequest:  httptest.NewRequest(http.MethodGet, "http://client.example/response", nil),
+					FStateBag: make(map[string]any),
+				}
+				ctx.FRequest.Header.Set("Cache-Control", "no-cache")
+				f.Request(ctx)
+				ctx.FResponse = upstreamResponseCC(http.StatusOK, "unique", "public, max-age=60")
+				ctx.FResponse.Header["Vary"] = vary
+				f.Response(ctx)
+				ctx.FResponse.Body.Close()
+				baseKey, _ := ctx.StateBag()[stateBagBaseKey].(string)
+				for _, key := range []string{baseKey, "vary:" + baseKey} {
+					if entry, err := f.storage.GetSilent(context.Background(), key); entry != nil || err != nil {
+						t.Fatalf("wildcard Response stored: entry=%+v err=%v", entry, err)
+					}
+				}
+			})
+		}
 	}
 }
 
 func TestProxy_CacheBypassBodyOwnership(t *testing.T) {
+	for _, mode := range []string{"private", "vary-star"} {
+		t.Run(mode, func(t *testing.T) {
+			testProxyCacheBypassBodyOwnership(t, mode == "vary-star")
+		})
+	}
+}
+
+func testProxyCacheBypassBodyOwnership(t *testing.T, varyStar bool) {
+	t.Helper()
 	const n = 4
 	payload := strings.Repeat("body", 1024)
 	var joined sync.WaitGroup
@@ -433,6 +460,10 @@ func TestProxy_CacheBypassBodyOwnership(t *testing.T) {
 			t.Errorf("backend Host = %q, URI = %q", r.Host, r.URL.RequestURI())
 		}
 		w.Header().Set("Cache-Control", "private, no-store")
+		if varyStar {
+			w.Header().Set("Vary", "*")
+			w.Header().Set("Cache-Control", "public, max-age=60")
+		}
 		w.Header().Set("Content-Length", fmt.Sprint(len(payload)))
 		fmt.Fprint(w, payload)
 	}))
@@ -488,6 +519,75 @@ func TestProxy_CacheBypassBodyOwnership(t *testing.T) {
 	request()
 	if calls.Load() != n+1 {
 		t.Fatal("nonstoreable response cached")
+	}
+}
+
+func TestCacheFilter_Coalesce_VaryStar_NotShared(t *testing.T) {
+	for _, keyHeaders := range [][]string{nil, {"X-Tenant"}} {
+		for _, vary := range [][]string{{"*"}, {"Accept-Language", "*"}, {"Accept-Language, *"}} {
+			t.Run(strings.Join(keyHeaders, ",")+"/"+strings.Join(vary, ";"), func(t *testing.T) {
+				const n = 5
+				m := &metricstest.MockMetrics{}
+				spec := NewCacheFilter(Options{MaxBytes: 1 << 20, Metrics: m})
+				defer spec.(*cacheSpec).Close()
+				args := []any{"1m", "1s", "1m", "24h"}
+				for _, header := range keyHeaders {
+					args = append(args, header)
+				}
+				fi, err := spec.CreateFilter(args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f := fi.(*cacheFilter)
+				var joined sync.WaitGroup
+				joined.Add(n)
+				var calls atomic.Int64
+				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls.Add(1)
+					joined.Wait()
+					w.Header()["Vary"] = vary
+					io.WriteString(w, "unique")
+				}))
+				defer backend.Close()
+				f.fetch = backend.Client().Do
+				var wg sync.WaitGroup
+				for range n {
+					wg.Go(func() {
+						req := httptest.NewRequest(http.MethodGet, "/item", nil)
+						req.Header.Set("X-Tenant", "same")
+						req = req.WithContext(&coalesceBarrierContext{Context: req.Context(), joined: &joined})
+						ctx := &filtertest.Context{FRequest: req, FBackendUrl: backend.URL, FStateBag: make(map[string]any)}
+						f.Request(ctx)
+						if !ctx.FServed {
+							t.Error("request was not served")
+							return
+						}
+						body, err := io.ReadAll(ctx.FResponse.Body)
+						ctx.FResponse.Body.Close()
+						if err != nil || string(body) != "unique" {
+							t.Errorf("body=%q, err=%v", body, err)
+						}
+						key, _ := ctx.StateBag()[stateBagKey].(string)
+						baseKey, _ := ctx.StateBag()[stateBagBaseKey].(string)
+						for _, storedKey := range []string{key, "vary:" + baseKey, varyKey(baseKey, req, parseVaryNames(vary...))} {
+							entry, err := f.storage.GetSilent(context.Background(), storedKey)
+							if err != nil || entry != nil {
+								t.Errorf("wildcard response stored at %s: %+v, %v", storedKey, entry, err)
+							}
+						}
+					})
+				}
+				wg.Wait()
+				if calls.Load() != n {
+					t.Fatalf("backend calls = %d, want %d", calls.Load(), n)
+				}
+				m.WithCounters(func(counters map[string]int64) {
+					if counters["cache.coalesce_bypass"] != n-1 || counters["cache.miss"] != n {
+						t.Errorf("want %d bypasses and %d misses, got %v", n-1, n, counters)
+					}
+				})
+			})
+		}
 	}
 }
 
