@@ -35,26 +35,36 @@ func (b *bypassResponseBody) Close() error {
 }
 
 func TestCacheFilter_BypassBodyOwnership(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		t.Run(method, func(t *testing.T) {
-			testCacheFilterBypassBody(t, method, nil)
-		})
+	for _, mode := range []string{"rfc-private", "force-vary-star"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			t.Run(mode+"/"+method, func(t *testing.T) {
+				testCacheFilterBypassBody(t, method, nil, mode == "force-vary-star")
+			})
+		}
 	}
 }
 
 func TestCacheFilter_BypassBodyReadError(t *testing.T) {
-	testCacheFilterBypassBody(t, http.MethodGet, io.ErrUnexpectedEOF)
+	for _, mode := range []string{"rfc-private", "force-vary-star"} {
+		t.Run(mode, func(t *testing.T) {
+			testCacheFilterBypassBody(t, http.MethodGet, io.ErrUnexpectedEOF, mode == "force-vary-star")
+		})
+	}
 }
 
 // Hold the leader until the follower has joined singleflight, then inspect both
 // responses only after Request has returned and closed the original streams.
-func testCacheFilterBypassBody(t *testing.T, method string, readErr error) {
+func testCacheFilterBypassBody(t *testing.T, method string, readErr error, varyStar bool) {
 	t.Helper()
 	synctest.Test(t, func(t *testing.T) {
 		m := &metricstest.MockMetrics{}
 		spec := NewCacheFilter(Options{MaxBytes: 1 << 20, Metrics: m})
 		defer spec.(*cacheSpec).Close()
-		fi, err := spec.CreateFilter(nil)
+		var args []any
+		if varyStar {
+			args = []any{"1m", "1s", "1m"}
+		}
+		fi, err := spec.CreateFilter(args)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,20 +77,30 @@ func testCacheFilterBypassBody(t *testing.T, method string, readErr error) {
 		f.fetch = func(req *http.Request) (*http.Response, error) {
 			fetches.Add(1)
 			body := followerBody
-			if req.Header.Get("Authorization") == "leader" {
+			if req.Header.Get("X-Participant") == "leader" {
 				close(started)
 				<-release
 				body = leaderBody
 			}
+			header := http.Header{"Cache-Control": {"private, no-store"}}
+			if varyStar {
+				header = http.Header{"Vary": {"*"}}
+			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Header:     http.Header{"Cache-Control": {"private, no-store"}},
+				Header:     header,
 				Body:       body,
 			}, nil
 		}
 
 		leader := newCtx(method, "http://example.org/resource", "leader")
 		follower := newCtx(method, "http://example.org/resource", "follower")
+		leader.FRequest.Header.Set("X-Participant", "leader")
+		follower.FRequest.Header.Set("X-Participant", "follower")
+		if varyStar {
+			leader.FRequest.Header.Del("Authorization")
+			follower.FRequest.Header.Del("Authorization")
+		}
 		leaderDone := make(chan struct{})
 		go func() {
 			defer close(leaderDone)

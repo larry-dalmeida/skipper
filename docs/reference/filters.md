@@ -4315,6 +4315,9 @@ matching the same key. It has no awareness of other filters in the chain.
   absolute guarantee: a burst of N concurrent requests that all turn out
   unsafe to share can produce up to N fetches for the same key, not just one
   extra.
+  `Vary: *` on any response field line is never cached or shared, even in force
+  mode or with matching `keyHeaders`
+  ([RFC 9111 §4.1](https://www.rfc-editor.org/rfc/rfc9111#section-4.1)).
 
 !!! note
     `s-maxage` implies `proxy-revalidate` per [RFC 9111 §5.2.2.10](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.10): stale entries
