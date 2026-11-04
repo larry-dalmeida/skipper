@@ -2235,6 +2235,15 @@ flowchart TD
   to `MeasureBackend*` metrics and the access log. Self-loopback revalidations
   aren't counted here since they go through the listener normally.
 
+**Cache origin timeouts:** cold-miss and background cache fetches use
+`--timeout-backend` for TCP dialing, `--tls-timeout-backend` for TLS handshakes,
+`--response-header-timeout-backend` for response headers, and
+`--expect-continue-timeout-backend` for 100-Continue waits. Zero response-header
+and expect-continue settings use the proxy defaults (60s and 30s respectively);
+a negative response-header setting disables that timeout. The dial timeout is
+not a whole-request or response-body deadline. Eligible SIE entries survive
+failed fetches without timestamp renewal and can be replaced on recovery.
+
 Static force-mode direct dispatch still bypasses later request filters, backend
 proxy access-log/round-trip metrics, proxy retry/route-specific timeout handling,
 and proxy-specific transport/TLS customization. It uses a separate HTTP client
