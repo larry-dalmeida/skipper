@@ -4214,6 +4214,14 @@ Eligible failures never replace the retained variant or restart its freshness/SI
 window, including during pipeline replay. Eligibility is rechecked when the fetch
 finishes; a healthy origin response takes precedence over the retained response.
 
+With L2 configured, expired positive-TTL L1 entries consult L2 rather than
+bypassing a newer shared representation. L1 warming preserves original freshness,
+age and SIE timestamps, using a separate process-local deadline that is not
+persisted in L2. L2 read failures may return an eligible local SIE candidate
+alongside an error; it is served only after an eligible origin failure, never as
+a fresh hit or an `only-if-cached` success. Clean L2 misses invalidate the local
+seed. See the [operation guide](../operation/operation.md#cache).
+
 Parameters:
 
 * `keyHeaders` – optional; comma-separated request header names folded into the

@@ -2060,24 +2060,30 @@ By default entries are stored in an in-process LRU (L1) local to each Skipper pr
 When `--enable-swarm` and `--enable-l2-cache` are set, a configured Valkey
 (`--swarm-valkey-urls`) or Redis (`--swarm-redis-urls`) ring serves as a shared backing store
 (L2) accessible by all Skipper instances via client-side consistent hashing; every read checks
-L1 first and an L1 hit returns without contacting L2 cache. Without `--enable-l2-cache`, the
+L1 first and a fresh local hit returns without contacting L2 cache. Positive-TTL
+entries must be strictly before both their response expiry and local warming
+deadline; retained stale entries fall through to L2. Without `--enable-l2-cache`, the
 configured ring is not used by the `cache()` filter, which uses L1 exclusively.
 
-On every successful L2 write the entry is also written to L1
-(write-through) with a TTL of `min(--cache-l1-ttl, entry.TTL)`. On a L2
-read hit, L1 is warmed with `min(--cache-l1-ttl, remaining freshness)` —
-remaining freshness (`entry.TTL - age`) is used rather than the original TTL to
-prevent L1 from serving the entry beyond L2's actual expiry. The default is
+Successful L2 writes and fresh L2 reads warm L1 (write-through) with a separate
+process-local deadline of `min(now + --cache-l1-ttl, CreatedAt + TTL)`.
+Warming preserves the response's original TTL, creation time, age metadata and
+SIE retention window. The local deadline is not stored in L2 and is cleared on
+L2 write fallback. The default warming interval is
 60 seconds, bounding how long Skipper serves a locally-cached entry before
 re-consulting L2. Set `--cache-l1-ttl=0` to disable L1 warming and
 restore write-around behaviour. Note: on L2 write errors (`l2_set_fallback`), L1
-is always used as a fallback regardless of `--cache-l1-ttl`; L2 read errors
-(`l2_get_error`) are treated as cache misses.
+is always used as a fallback regardless of `--cache-l1-ttl`.
+L2 transport or decode failures remain errors and may return an eligible local
+SIE candidate, never a fresh hit. Origin is fetched first; only an eligible origin
+failure allows fallback, with the original SIE window rechecked afterward.
+A healthy origin or a fresh L2 representation takes precedence. A clean L2 miss
+invalidates the local seed so a later L2 failure cannot resurrect a deleted value.
 
 When an upstream responds successfully to an unsafe method (`POST`, `PUT`, `DELETE`, `PATCH`),
 the filter removes the cached entry for that URL from both L2 and the local L1.
 Only the local process's L1 is cleared — other Skipper processes in the fleet retain their
-own L1 copies until each entry's warmed TTL (bounded by `--cache-l1-ttl`) expires naturally.
+own L1 copies until each entry's local warming deadline (bounded by `--cache-l1-ttl`) expires.
 Set `--cache-l1-ttl` accordingly to bound the stale window after an invalidation.
 
 There is no out-of-band operator invalidation API. To clear the cache outside the normal
@@ -2160,15 +2166,15 @@ flowchart TD
     A[Incoming Request] --> B["Skipper cache() filter"]
     B --> K[Owned filtered identity and Vary variant key]
     K --> C{L1 LRUStorage}
-    C -->|cache.l1_hit — fresh hit| S[Entry Served]
-    C -->|cache.l2_miss| D{L2Storage}
-    C -->|cache.stale hit — no l1_hit| D
+    C -->|cache.l1_hit — before response and local deadlines| S[Entry Served]
+    C -->|absent entry| D{L2Storage}
+    C -->|retained entry past either deadline — no l1_hit| D
     S -->|stale response: enqueue refresh| Q{Exact variant refreshed since enqueue<br/>and still fresh?}
     Q -->|yes: skip origin fetch| Z[Keep newer representation]
     Q -->|no: refresh or retry| E
     D -->|cache.l2_hit — key found| S
-    D -->|cache.l2_miss — key absent| E{Cache origin dispatch}
-    D -->|cache.l2_get_error — error / timeout| E
+    D -->|cache.l2_miss — invalidate local seed| E{Cache origin dispatch}
+    D -->|read error — retain eligible local SIE candidate, not a hit| E
     E -->|force mode, valid static HTTP/S backend| F[Direct fetch: filtered path and outgoing Host]
     E -->|RFC mode, dynamic or invalid backend| I{Original request preserved?}
     I -->|yes| G[Replay original request through Skipper]
@@ -2184,13 +2190,26 @@ flowchart TD
     H -->|500/502/503/504| T
     T -->|yes: retain timestamps, no failed overwrite<br/>serve STALE for waiting GETs| S
     T -->|no: ordinary origin error handling| U
-    H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
+    H -->|cacheable: write variant and Vary metadata<br/>write L2 and warm L1<br/>local deadline bounded by response expiry| S
     H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
 
-**Write path:** successful L2 Set warms L1 with min(--cache-l1-ttl, entry.TTL) (default 60s). L2 Get hit warms L1 with min(--cache-l1-ttl, remaining freshness). L1 is also populated on L2 Set errors (fallback). Set --cache-l1-ttl=0 for write-around.
+**Write path:** successful L2 Set and fresh L2 Get warm L1 until the earlier of
+`now + --cache-l1-ttl` (default 60s) and the original response expiry. Response
+TTL and retention metadata remain unchanged. L1 is also populated on L2 Set
+errors (fallback), without a separate warming deadline. Set `--cache-l1-ttl=0`
+for write-around.
 
-**Read path:** L1 checked first. Fresh L1 hit → returns immediately (increments `cache.l1_hit`), no L2 call. Stale L1 hit (past TTL but within the stale retention window) → falls through to L2 without incrementing `cache.l1_hit`. L1 miss → L2. L2 hit → increments `cache.l2_hit`, warms L1 with `min(--cache-l1-ttl, remaining freshness)` when `--cache-l1-ttl > 0`, returns entry. L2 miss (nil) → cold miss (increments `cache.l2_miss`). L2 error → increments `cache.l2_get_error`, treated as a cold miss.
+**Read path:** L1 is checked first. A positive-TTL hit must be strictly before
+the original response expiry and any local warming deadline; it increments
+`cache.l1_hit` without calling L2. Retained entries past either deadline consult
+L2 without a local-hit result. Zero-TTL conditional-revalidation behaviour is
+unchanged. An L2 hit increments `cache.l2_hit` and warms fresh entries without
+changing response metadata. A clean miss increments `cache.l2_miss`, invalidates
+L1 and returns `(nil, nil)`. Transport failures increment `cache.l2_get_error`;
+decode failures report existing storage-error counters. Both return a non-nil
+error with any eligible local SIE candidate, not a cache hit. L1 is re-read after
+failed blocking L2 I/O to observe concurrent local warming or deletion.
 
 ### Metrics
 
@@ -2276,7 +2295,7 @@ logged and dropped; a later GET can refresh the full representation.
 
 - `cache.l1_hit`: Counter, L1 hits that bypassed L2
 - `cache.l2_miss`: Counter, L2 misses that proceeded to an upstream fetch
-- `cache.l2_get_error`: Counter, L2 Get errors — request treated as a cache miss, fetched from origin
+- `cache.l2_get_error`: Counter, L2 transport Get errors — origin is required before eligible local SIE fallback; not a fresh hit
 - `cache.l2_set_fallback`: Counter, L2 Set errors — entry written to L1 only (not L2)
 - `cache.l2_hit`: Counter, successful L2 Get (entry returned from L2); L1 is warmed as a side-effect when `--cache-l1-ttl > 0`
 - `cache.l2_get_duration`: Histogram, time of the underlying Valkey/Redis `Get` round-trip, on every call (hit, miss, or error) — including internal lookups like the Vary-sentinel check

@@ -10,10 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
 	"github.com/zalando/skipper/eskip"
 	"github.com/zalando/skipper/filters"
 	"github.com/zalando/skipper/logging"
 	"github.com/zalando/skipper/logging/loggingtest"
+	"github.com/zalando/skipper/metrics"
 	"github.com/zalando/skipper/proxy"
 	"github.com/zalando/skipper/routing"
 	"github.com/zalando/skipper/routing/testdataclient"
@@ -69,6 +71,36 @@ func BenchmarkCacheHit(b *testing.B) {
 			}
 			if response.Code != http.StatusOK || response.Body.String() != body || response.Header().Get(cacheStatusHeader) != cacheStatusHit {
 				b.Fatalf("unexpected cache response: %d, %v", response.Code, response.Header())
+			}
+		})
+	}
+}
+
+func BenchmarkL2StorageFreshLocalRead(b *testing.B) {
+	for _, silent := range []bool{false, true} {
+		name := "Get"
+		if silent {
+			name = "GetSilent"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := context.Background()
+			client := newStubValkeyClient()
+			l1 := NewLRUStorage(1<<20, nil, metrics.Void)
+			s := NewL2Storage(client, l1, metrics.Void, time.Hour, valkey.IsValkeyNil)
+			entry := &Entry{StatusCode: 200, Payload: []byte("fresh"), Header: make(http.Header), CreatedAt: time.Now(), TTL: time.Hour}
+			if err := s.Set(ctx, "key", entry); err != nil {
+				b.Fatal(err)
+			}
+			get := s.Get
+			if silent {
+				get = s.GetSilent
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if entry, err := get(ctx, "key"); err != nil || entry == nil {
+					b.Fatalf("entry=%+v err=%v", entry, err)
+				}
 			}
 		})
 	}
