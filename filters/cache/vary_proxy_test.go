@@ -59,6 +59,47 @@ func TestCacheFilter_Vary_ResponseUsesCapturedIdentity(t *testing.T) {
 	}
 }
 
+func TestCacheFilter_Vary_RefreshUsesFilteredCredentials(t *testing.T) {
+	for _, credentials := range []string{"added", "removed"} {
+		t.Run(credentials, func(t *testing.T) {
+			f := newTestFilter(t, time.Minute, time.Second, time.Minute)
+			original := httptest.NewRequest(http.MethodGet, "http://origin.example/variants", nil)
+			filtered := original.Clone(context.Background())
+			filtered.Header.Set("Accept-Language", "de")
+			if credentials == "added" {
+				filtered.Header.Set("Authorization", "filtered-token")
+			} else {
+				original.Header.Set("Authorization", "original-token")
+			}
+			identity := snapshotCacheIdentity(filtered)
+			f.fetch = func(req *http.Request) (*http.Response, error) {
+				if req.Header.Get("Authorization") != original.Header.Get("Authorization") {
+					t.Fatal("refresh did not replay the original credentials")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Vary": {"Accept-Language"}},
+					Body:       io.NopCloser(strings.NewReader("de representation")),
+				}, nil
+			}
+			f.revalidate("base", "base", original, identity, "http://origin.example", "")
+			key := varyKey("base", identity, []string{"Accept-Language"})
+			entry, err := f.storage.GetSilent(context.Background(), key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStored := credentials == "removed"
+			if (entry != nil) != wantStored {
+				t.Fatalf("stored=%t want=%t with %s credentials", entry != nil, wantStored, credentials)
+			}
+			sentinel, err := f.storage.GetSilent(context.Background(), "vary:base")
+			if err != nil || (sentinel != nil) != wantStored {
+				t.Fatalf("Vary metadata=%+v wantStored=%t err=%v", sentinel, wantStored, err)
+			}
+		})
+	}
+}
+
 type varyRewriteSpec struct{}
 
 func (varyRewriteSpec) Name() string { return "varyRewrite" }
