@@ -4190,6 +4190,12 @@ fetches count toward `cache.reval_backend_dispatch`; direct-dispatched cold-miss
 Unsafe methods (`POST`, `PUT`, `DELETE`, `PATCH`) invalidate the cached entry on
 success. `HEAD 200` freshens stored headers without replacing the body.
 
+Conditional background refresh merges a `304 Not Modified` into the retained
+Vary variant, preserving its status, payload and unchanged representation headers
+([RFC 9111 §4.3.4](https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4)).
+A bare 304 is never stored; eviction before the response arrives skips the refresh.
+See the [operation guide](../operation/operation.md#cache).
+
 Parameters:
 
 * `keyHeaders` – optional; comma-separated request header names folded into the

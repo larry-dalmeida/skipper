@@ -585,6 +585,10 @@ func cacheIdentity(ctx filters.FilterContext) *http.Request {
 // that isn't the one who fetched it - a coalesce follower, or
 // background revalidation triggered by someone else's request
 func (f *cacheFilter) storeDecision(req *http.Request, statusCode int, header http.Header, d cacheDirectives) (ttl time.Duration, store bool) {
+	// A 304 updates a retained representation; it is not a representation itself.
+	if statusCode == http.StatusNotModified {
+		return 0, false
+	}
 	if slices.Contains(parseVaryNames(header.Values("Vary")...), "*") {
 		return 0, false
 	}
@@ -1097,6 +1101,7 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 			// Reuse stored payload and merge any updated headers from 304.
 			if stored, serr := f.storage.Get(context.Background(), key); serr == nil && stored != nil {
 				body = stored.Payload
+				statusCode = stored.StatusCode
 				responseHeader = stored.Header.Clone()
 				mergeHeaders := resp.Header.Clone()
 				stripHopByHop(mergeHeaders)
@@ -1107,7 +1112,6 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 				log.WithField("key", key).Debug("cache: revalidation received 304 but entry was evicted, skipping refresh")
 				return nil, nil
 			}
-			statusCode = http.StatusOK
 		} else {
 			var rerr error
 			body, rerr = io.ReadAll(resp.Body)

@@ -2103,6 +2103,14 @@ request replay used to rerun routing and request filters.
 `Vary: *` on any field line prevents both storage and follower sharing, including
 in force mode and when `keyHeaders` match. Each follower fetches independently.
 
+Conditional background refresh sends the retained variant's ETag and Last-Modified
+validators. A `304 Not Modified` is never stored as a standalone response, including
+when replayed through the proxy pipeline. It updates the retained representation's
+headers and freshness while preserving its status, payload and unchanged metadata
+([RFC 9111 §4.3.4](https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4)).
+Hop-by-hop headers are not merged. If the variant is evicted before the 304 arrives,
+the refresh is skipped; a later request must fetch a complete representation.
+
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with
 `--cache-l1-max-memory-bytes` (or programmatically via `skipper.Options.ResponseCacheMaxMemoryBytes`).
@@ -2135,6 +2143,9 @@ flowchart TD
     E -->|RFC mode, dynamic or invalid backend| G[Replay original request through Skipper]
     F --> H[Origin response]
     G --> H
+    H -->|304 refresh| R{Retained variant exists?}
+    R -->|yes: merge headers and freshness<br/>retain status and payload| S
+    R -->|no: skip refresh, no write| U
     H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
     H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
