@@ -613,7 +613,14 @@ func (f *cacheFilter) storeDecision(req *http.Request, statusCode int, header ht
 // Stale-if-error (RFC 5861 §4) is also applied here: a pre-fetch snapshot of any
 // eligible stored entry is served on 5xx instead of propagating the error.
 func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
+	if ctx.Request().Method == http.MethodHead {
+		return
+	}
 	source, backendURL, outgoingHost := f.requestDispatch(ctx, "cache.coalesce_error")
+	if source == nil {
+		log.Warn("cache: original request unavailable for cold-miss replay, using ordinary proxy handling")
+		return
+	}
 	req, err := f.prepareDispatch(source, backendURL, outgoingHost)
 	if err != nil {
 		f.metrics.IncCounter("cache.coalesce_error")
@@ -734,7 +741,8 @@ func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
 				f.coalesce(ctx, varyKey(baseKey, identity, cr.varyNames))
 				return
 			}
-			resp, err := f.fetch(req)
+			// Unlike the shared leader, this fetch serves only the current waiter.
+			resp, err := f.fetch(req.Clone(ctx.Request().Context()))
 			if err != nil {
 				f.metrics.IncCounter("cache.coalesce_bypass_error")
 				if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
@@ -744,7 +752,7 @@ func (f *cacheFilter) coalesce(ctx filters.FilterContext, key string) {
 			}
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
-			if err != nil {
+			if err != nil || ctx.Request().Context().Err() != nil {
 				f.metrics.IncCounter("cache.coalesce_bypass_error")
 				if p, ok := f.metrics.(interface{ IncCacheResult(string, string) }); ok {
 					p.IncCacheResult("coalesce_bypass_error", "n/a")
@@ -1006,13 +1014,10 @@ func (f *cacheFilter) prepareDispatch(source *http.Request, backendURL, outgoing
 // on it; replaying the already-mutated request can no longer match the route that
 // produced that mutation, so revalidation permanently fails with a routing error
 // and a stale entry (e.g. a cached error) never gets refreshed.
-// ctx.OriginalRequest() can be nil per its interface contract, so fall back to
-// ctx.Request() rather than passing nil into enqueueRevalidation.
+// A nil OriginalRequest means replay is unavailable: callers must use ordinary
+// proxy handling or skip background work, never replay the transformed request.
 func revalidationRequest(ctx filters.FilterContext) *http.Request {
-	if orig := ctx.OriginalRequest(); orig != nil {
-		return orig
-	}
-	return ctx.Request()
+	return ctx.OriginalRequest()
 }
 
 // enqueueRevalidation sends a revalidation job to the background worker.
@@ -1023,6 +1028,16 @@ func revalidationRequest(ctx filters.FilterContext) *http.Request {
 // If the queue is full the job is dropped and reval_dropped is incremented.
 // The job retains this filter so the shared worker respects the route's config.
 func (f *cacheFilter) enqueueRevalidation(key, baseKey string, orig, identity *http.Request, backendURL, outgoingHost string) {
+	if orig == nil {
+		f.metrics.IncCounter("cache.reval_dropped")
+		log.Warn("cache: original request unavailable, skipping pipeline refresh")
+		return
+	}
+	if orig.Method == http.MethodHead {
+		f.metrics.IncCounter("cache.reval_dropped")
+		log.Warn("cache: skipping HEAD refresh to preserve the stored GET representation")
+		return
+	}
 	cloned := orig.Clone(context.Background())
 	job := revalJob{
 		key:          key,
@@ -1053,10 +1068,27 @@ func (f *cacheFilter) enqueueRevalidation(key, baseKey string, orig, identity *h
 // loops back through skipper's own listener (f.listenAddr), which is counted
 // normally.
 func (f *cacheFilter) doRevalidate(key string, req *http.Request, backendURL, outgoingHost string) {
-	f.revalidate(key, key, req, snapshotCacheIdentity(req), backendURL, outgoingHost)
+	var identity *http.Request
+	if req != nil {
+		identity = snapshotCacheIdentity(req)
+	}
+	f.revalidate(key, key, req, identity, backendURL, outgoingHost)
 }
 
 func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Request, backendURL, outgoingHost string) {
+	if req == nil {
+		f.metrics.IncCounter("cache.reval_dropped")
+		log.Warn("cache: original request unavailable, skipping pipeline refresh")
+		return
+	}
+	if req.Method == http.MethodHead {
+		f.metrics.IncCounter("cache.reval_dropped")
+		log.Warn("cache: skipping HEAD refresh to preserve the stored GET representation")
+		return
+	}
+	if identity == nil {
+		identity = snapshotCacheIdentity(req)
+	}
 	f.revalSF.Do(key, func() (any, error) { //nolint:errcheck
 		req, err := f.prepareDispatch(req, backendURL, outgoingHost)
 		if err != nil {

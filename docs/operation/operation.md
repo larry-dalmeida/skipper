@@ -2123,8 +2123,8 @@ falling back to 2 GB if the limit is unreadable. Override with
 ```mermaid
 flowchart TD
     A[Incoming Request] --> B["Skipper cache() filter"]
-    B --> I[Owned filtered identity and Vary variant key]
-    I --> C{L1 LRUStorage}
+    B --> K[Owned filtered identity and Vary variant key]
+    K --> C{L1 LRUStorage}
     C -->|cache.l1_hit — fresh hit| S[Entry Served]
     C -->|cache.l2_miss| D{L2Storage}
     C -->|cache.stale hit — no l1_hit| D
@@ -2132,9 +2132,12 @@ flowchart TD
     D -->|cache.l2_miss — key absent| E{Cache origin dispatch}
     D -->|cache.l2_get_error — error / timeout| E
     E -->|force mode, valid static HTTP/S backend| F[Direct fetch: filtered path and outgoing Host]
-    E -->|RFC mode, dynamic or invalid backend| G[Replay original request through Skipper]
+    E -->|RFC mode, dynamic or invalid backend| I{Original request preserved?}
+    I -->|yes| G[Replay original request through Skipper]
+    I -->|no| J[Ordinary cold-miss proxy handling; skip refresh]
     F --> H[Origin response]
     G --> H
+    J --> H
     H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
     H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
@@ -2165,7 +2168,9 @@ flowchart TD
   `cache.coalesce_bypass`) or its response-body read returned an error.
   Independently fetched bodies are buffered before their upstream streams close,
   so the response remains readable after the fetch helper returns. An incomplete
-  body is not served as a successful response.
+  body is not served as a successful response. Independent follower fetches use
+  the follower's request context, so client cancellation interrupts a stalled
+  body read without cancelling the shared leader fetch.
 - `cache.coalesce_wait_duration`: Histogram, time from issuing a cold-miss singleflight
   call to the result being available — near-zero for the leader (it computes the result
   itself), the leader's real fetch time for followers waiting on it
@@ -2180,7 +2185,9 @@ flowchart TD
 
 - `cache.reval_queue_depth`: Gauge, current number of pending revalidation jobs in the queue (sampled every 10s)
 - `cache.reval_wait_duration`: Histogram, time a revalidation job spent waiting in the queue before the worker picked it up
-- `cache.reval_dropped`: Counter, revalidation jobs dropped because the queue was full or body read failed
+- `cache.reval_dropped`: Counter, revalidation jobs dropped because the queue was full,
+  body read failed, a HEAD request cannot refresh a complete GET representation,
+  or original routing inputs are unavailable for pipeline replay
 - `cache.reval_error`: Counter, background revalidation preparation or fetch
   failures, or an invalid backend URL required pipeline fallback
 - `cache.reval_duration`: Histogram, end-to-end duration of each background revalidation job
@@ -2197,6 +2204,15 @@ and proxy-specific transport/TLS customization. It uses a separate HTTP client
 with system trust and its existing redirect/compression behavior; it does not
 imply full proxy-executor equivalence. Required request/response filters must be
 positioned before `cache()` as described in the filter reference.
+
+RFC/dynamic pipeline coalescing and background refresh require
+`--proxy-preserve-original` (`proxy.PreserveOriginal` programmatically).
+Without it, cold misses follow the ordinary proxy and Response stores the result;
+warm hits still work. Unavailable pipeline refreshes are logged and counted as
+`cache.reval_dropped`, leaving the existing stale representation untouched.
+HEAD misses also use ordinary proxy processing, preserve HEAD-specific routing,
+and freshen only metadata of an existing GET entry. HEAD-triggered refreshes are
+logged and dropped; a later GET can refresh the full representation.
 
 **L2 (if Valkey or Redis is configured):**
 
