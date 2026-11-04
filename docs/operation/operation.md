@@ -2115,6 +2115,20 @@ not increment `cache.l1_hit`, `cache.l2_hit`, `cache.l2_miss` or
 `cache.l2_get_error` (including labelled lookup results). L2 read timing, storage
 fault reporting and L1 warming remain active.
 
+With force-mode `staleIfError` enabled, transport failures, incomplete response
+bodies and HTTP 500/502/503/504 can serve the retained last-good variant
+([RFC 5861 §4](https://www.rfc-editor.org/rfc/rfc5861#section-4)).
+HTTP 501/505 and cached 5xx responses are not fallback candidates. The filter
+captures the last-good response before an origin fetch and checks the original
+TTL plus SIE window again after the fetch finishes. The shorter positive window
+from the stored entry also applies; its endpoint is inclusive.
+Eligible failures preserve the stored payload, validators, age metadata and
+timestamps, including during inner pipeline response processing and repeated
+background refreshes. They do not restart retention. A healthy origin replaces
+the retained response normally; a missing or expired seed cannot provide fallback.
+Restarting a process loses its L1 seed; retained L2 data can still provide it,
+but resetting volatile L2 as well loses that last-good response.
+
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with
 `--cache-l1-max-memory-bytes` (or programmatically via `skipper.Options.ResponseCacheMaxMemoryBytes`).
@@ -2153,6 +2167,11 @@ flowchart TD
     H -->|304 refresh| R{Retained variant exists?}
     R -->|yes: merge headers and freshness<br/>retain status and payload| S
     R -->|no: skip refresh, no write| U
+    F -->|transport or incomplete body failure| T{Last-good variant within original SIE window?}
+    G -->|transport or incomplete body failure| T
+    H -->|500/502/503/504| T
+    T -->|yes: retain timestamps, no failed overwrite<br/>serve STALE for waiting GETs| S
+    T -->|no: ordinary origin error handling| U
     H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
     H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
