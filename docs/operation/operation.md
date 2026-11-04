@@ -2100,6 +2100,17 @@ added by an earlier filter, is not stored or shared unless it is `public`/`must-
 apply once on cold misses and background refreshes. HEAD requests other than `200` freshening never create or replace
 the stored GET entry.
 
+All `Vary` response field lines contribute to variant selection
+([RFC 9111 §4.1](https://www.rfc-editor.org/rfc/rfc9111#section-4.1)).
+Cold misses, response processing and background refreshes store each representation
+under its variant key. Matching configured `keyHeaders` does not bypass the
+additional Vary dimensions. Cacheable mismatched followers regroup by variant.
+The filter owns a snapshot of the filtered request headers at `cache()` for
+variant selection and queued refreshes; this is separate from the original
+request replay used to rerun routing and request filters.
+`Vary: *` on any field line prevents both storage and follower sharing, including
+in force mode and when `keyHeaders` match. Each follower fetches independently.
+
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with
 `--cache-l1-max-memory-bytes` (or programmatically via `skipper.Options.ResponseCacheMaxMemoryBytes`).
@@ -2120,7 +2131,8 @@ falling back to 2 GB if the limit is unreadable. Override with
 ```mermaid
 flowchart TD
     A[Incoming Request] --> B["Skipper cache() filter"]
-    B --> C{L1 LRUStorage}
+    B --> V[Owned filtered identity and Vary variant key]
+    V --> C{L1 LRUStorage}
     C -->|cache.l1_hit — fresh hit| S[Entry Served]
     C -->|cache.l2_miss| D{L2Storage}
     C -->|cache.stale hit — no l1_hit| D
@@ -2134,7 +2146,8 @@ flowchart TD
     F --> H[Origin response]
     G --> H
     J --> H
-    H -->|write back: Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
+    H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
+    H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
 
 **Write path:** successful L2 Set warms L1 with min(--cache-l1-ttl, entry.TTL) (default 60s). L2 Get hit warms L1 with min(--cache-l1-ttl, remaining freshness). L1 is also populated on L2 Set errors (fallback). Set --cache-l1-ttl=0 for write-around.
@@ -2152,9 +2165,11 @@ flowchart TD
 - `cache.stale`: Counter, stale entry served while background revalidation was enqueued
 - `cache.coalesce_error`: Counter, cold-miss dispatch preparation or fetch failed,
   or an invalid backend URL required pipeline fallback
-- `cache.coalesce_bypass`: Counter, a concurrent cold-miss request's response wasn't
-  storeable and no `keyHeaders`/`Vary` proof of matching identity was available, so
-  it performed its own fetch instead of reusing another request's in-flight response.
+- `cache.coalesce_bypass`: Counter, a concurrent cold-miss follower could not reuse
+  the leader's response because its Vary dimensions differed, the response carried
+  `Vary: *`, or it was not storeable and no `keyHeaders`/`Vary` proof of matching
+  identity was available. Cacheable mismatches regroup by variant; other bypasses
+  fetch independently.
   A successfully served independent response carries `X-Cache-Status: MISS` and
   contributes once to `cache.miss` and the labelled `miss` result.
 - `cache.coalesce_bypass_error`: Counter, an independent bypass fetch (see

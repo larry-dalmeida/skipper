@@ -241,16 +241,35 @@ func TestCacheFilter_HEADRefreshSkipped(t *testing.T) {
 		return nil, nil
 	}
 	req := httptest.NewRequest(http.MethodHead, "http://example.org/resource", nil)
-	f.enqueueRevalidation("key", req, "http://origin.example", "")
+	f.enqueueRevalidation("key", "key", req, snapshotCacheIdentity(req), "http://origin.example", "")
 	f.doRevalidate("key", req, "", "")
+	f.revalidate("key", "key", req, snapshotCacheIdentity(req), "", "")
 	m.WithCounters(func(counters map[string]int64) {
-		if counters["cache.reval_dropped"] != 2 {
-			t.Errorf("dropped refreshes=%d want=2", counters["cache.reval_dropped"])
+		if counters["cache.reval_dropped"] != 3 {
+			t.Errorf("dropped refreshes=%d want=3", counters["cache.reval_dropped"])
 		}
 	})
 	if req.Method != http.MethodHead || req.Header.Get(revalidateHeader) != "" {
 		t.Fatal("skipped refresh mutated request")
 	}
+}
+
+func TestCacheFilter_UnavailableRefreshSkipped(t *testing.T) {
+	f := newTestFilter(t, time.Minute, time.Second, time.Second)
+	m := &metricstest.MockMetrics{}
+	f.metrics = m
+	f.fetch = func(*http.Request) (*http.Response, error) {
+		t.Fatal("missing original request must not dispatch a refresh")
+		return nil, nil
+	}
+	f.enqueueRevalidation("key", "key", nil, nil, "", "")
+	f.doRevalidate("key", nil, "", "")
+	f.revalidate("key", "key", nil, nil, "", "")
+	m.WithCounters(func(counters map[string]int64) {
+		if counters["cache.reval_dropped"] != 3 {
+			t.Errorf("dropped refreshes=%d want=3", counters["cache.reval_dropped"])
+		}
+	})
 }
 
 func TestProxy_CacheHEADErrorDoesNotReplaceGETRepresentation(t *testing.T) {
