@@ -2110,6 +2110,10 @@ headers and freshness while preserving its status, payload and unchanged metadat
 ([RFC 9111 §4.3.4](https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4)).
 Hop-by-hop headers are not merged. If the variant is evicted before the 304 arrives,
 the refresh is skipped; a later request must fetch a complete representation.
+Internal validator and retained-representation reads use silent lookups: they do
+not increment `cache.l1_hit`, `cache.l2_hit`, `cache.l2_miss` or
+`cache.l2_get_error` (including labelled lookup results). L2 read timing, storage
+fault reporting and L1 warming remain active.
 
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with

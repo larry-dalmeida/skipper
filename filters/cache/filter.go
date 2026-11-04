@@ -1072,7 +1072,7 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 			f.metrics.IncCounter("cache.reval_backend_dispatch")
 		}
 
-		if stored, err := f.storage.Get(context.Background(), key); err == nil && stored != nil {
+		if stored, err := f.storage.GetSilent(context.Background(), key); err == nil && stored != nil {
 			if stored.ETag != "" {
 				req.Header.Set("If-None-Match", stored.ETag)
 			}
@@ -1099,7 +1099,7 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 
 		if resp.StatusCode == http.StatusNotModified {
 			// Reuse stored payload and merge any updated headers from 304.
-			if stored, serr := f.storage.Get(context.Background(), key); serr == nil && stored != nil {
+			if stored, serr := f.storage.GetSilent(context.Background(), key); serr == nil && stored != nil {
 				body = stored.Payload
 				statusCode = stored.StatusCode
 				responseHeader = stored.Header.Clone()
