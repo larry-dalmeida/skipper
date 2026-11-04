@@ -2220,10 +2220,13 @@ flowchart TD
 - `cache.reval_queue_depth`: Gauge, current number of pending revalidation jobs in the queue (sampled every 10s)
 - `cache.reval_wait_duration`: Histogram, time a revalidation job spent waiting in the queue before the worker picked it up
 - `cache.reval_dropped`: Counter, revalidation jobs dropped because the queue was full,
-  body read failed, a HEAD request cannot refresh a complete GET representation,
+  a HEAD request cannot refresh a complete GET representation,
   or original routing inputs are unavailable for pipeline replay
 - `cache.reval_error`: Counter, background revalidation preparation or fetch
-  failures, or an invalid backend URL required pipeline fallback
+  failures, incomplete response bodies, all HTTP 5xx origin responses, or an
+  invalid backend URL required pipeline fallback. A 5xx with a body-read error
+  counts once, regardless of cacheability or SIE eligibility. Counting 501/505
+  as errors does not make them eligible for stale fallback.
 - `cache.reval_duration`: Histogram, end-to-end duration of each background revalidation job
 - `cache.reval_backend_dispatch`: Counter, background revalidation fetches sent
   directly to the backend (force mode, static backend only). Direct-dispatched

@@ -1164,8 +1164,11 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 		responseTime := time.Now()
 		defer resp.Body.Close()
 
-		if staleIfErrorStatus(resp.StatusCode) && f.staleIfErrorEntry(key) != nil {
+		originFailed := resp.StatusCode >= 500 && resp.StatusCode < 600
+		if originFailed {
 			f.metrics.IncCounter("cache.reval_error")
+		}
+		if staleIfErrorStatus(resp.StatusCode) && f.staleIfErrorEntry(key) != nil {
 			return nil, nil
 		}
 
@@ -1192,7 +1195,9 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 			var rerr error
 			body, rerr = io.ReadAll(resp.Body)
 			if rerr != nil {
-				f.metrics.IncCounter("cache.reval_error")
+				if !originFailed {
+					f.metrics.IncCounter("cache.reval_error")
+				}
 				log.WithFields(log.Fields{
 					"url": req.URL.String(),
 				}).WithError(rerr).Warn("cache: failed to read response body during background revalidation")
