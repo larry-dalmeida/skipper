@@ -808,8 +808,10 @@ func (f *cacheFilter) staleIfErrorEntry(key string) *Entry {
 	if f.staleIfError <= 0 {
 		return nil
 	}
-	entry, err := f.storage.GetSilent(context.Background(), key)
-	if err != nil || !f.canServeStaleIfError(entry) {
+	// An L2 error can carry a local candidate, never a fresh hit. Fetch origin
+	// first and recheck eligibility afterward.
+	entry, _ := f.storage.GetSilent(context.Background(), key)
+	if !f.canServeStaleIfError(entry) {
 		return nil
 	}
 	return entry

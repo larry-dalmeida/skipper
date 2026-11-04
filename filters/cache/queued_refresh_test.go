@@ -10,15 +10,31 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/valkey-io/valkey-go"
 	"github.com/zalando/skipper/metrics/metricstest"
 )
 
 func TestCacheFilter_QueuedRefresh(t *testing.T) {
+	for _, storage := range []string{"lru", "l2_warming"} {
+		t.Run(storage, func(t *testing.T) {
+			testCacheFilterQueuedRefresh(t, storage == "l2_warming")
+		})
+	}
+}
+
+func testCacheFilterQueuedRefresh(t *testing.T, l2 bool) {
+	t.Helper()
 	for _, failure := range []string{"none", "503", "transport", "incomplete_body"} {
 		t.Run(failure, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				m := &metricstest.MockMetrics{}
-				spec := NewCacheFilter(Options{MaxBytes: 1 << 20, ListenAddr: "localhost:9090", Metrics: m}).(*cacheSpec)
+				opts := Options{MaxBytes: 1 << 20, ListenAddr: "localhost:9090", Metrics: m}
+				if l2 {
+					opts.L2Client = newStubValkeyClient()
+					opts.L1TTL = time.Second
+					opts.IsNoL2Err = valkey.IsValkeyNil
+				}
+				spec := NewCacheFilter(opts).(*cacheSpec)
 				defer spec.Close()
 				filter, err := spec.CreateFilter([]any{"4s", "2s", "4s", "12s", "Authorization"})
 				if err != nil {
