@@ -4206,6 +4206,14 @@ Vary variant, preserving its status, payload and unchanged representation header
 A bare 304 is never stored; eviction before the response arrives skips the refresh.
 See the [operation guide](../operation/operation.md#cache).
 
+Stale-if-error preserves the last-good response on transport failures, incomplete
+response bodies, and HTTP 500, 502, 503 or 504
+([RFC 5861 §4](https://www.rfc-editor.org/rfc/rfc5861#section-4)).
+Other HTTP failures, including 501 and 505, do not trigger fallback.
+Eligible failures never replace the retained variant or restart its freshness/SIE
+window, including during pipeline replay. Eligibility is rechecked when the fetch
+finishes; a healthy origin response takes precedence over the retained response.
+
 Parameters:
 
 * `keyHeaders` – optional; comma-separated request header names folded into the
@@ -4218,8 +4226,10 @@ Force-mode-only parameters (3–5 arguments):
 * `ttl` – freshness duration for 200 responses (string, e.g. `"5m"`)
 * `errorTTL` – freshness duration for 404/5xx responses (string)
 * `swrWindow` – stale-while-revalidate window after TTL expires (string)
-* `staleIfError` – optional; how long a stale entry may be served on upstream
-  5xx (string, [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861))
+* `staleIfError` – optional; how long a last-good entry may be served on eligible
+  origin failures after its TTL expires (string,
+  [RFC 5861 §4](https://www.rfc-editor.org/rfc/rfc5861#section-4)).
+  The shorter positive stored-entry window also bounds eligibility.
 
 Examples:
 

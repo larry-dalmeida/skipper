@@ -2115,6 +2115,20 @@ not increment `cache.l1_hit`, `cache.l2_hit`, `cache.l2_miss` or
 `cache.l2_get_error` (including labelled lookup results). L2 read timing, storage
 fault reporting and L1 warming remain active.
 
+With force-mode `staleIfError` enabled, transport failures, incomplete response
+bodies and HTTP 500/502/503/504 can serve the retained last-good variant
+([RFC 5861 §4](https://www.rfc-editor.org/rfc/rfc5861#section-4)).
+HTTP 501/505 and cached 5xx responses are not fallback candidates. The filter
+captures the last-good response before an origin fetch and checks the original
+TTL plus SIE window again after the fetch finishes. The shorter positive window
+from the stored entry also applies; its endpoint is inclusive.
+Eligible failures preserve the stored payload, validators, age metadata and
+timestamps, including during inner pipeline response processing and repeated
+background refreshes. They do not restart retention. A healthy origin replaces
+the retained response normally; a missing or expired seed cannot provide fallback.
+Restarting a process loses its L1 seed; retained L2 data can still provide it,
+but resetting volatile L2 as well loses that last-good response.
+
 The L1 memory budget defaults to 25% of the container's cgroup memory limit,
 falling back to 2 GB if the limit is unreadable. Override with
 `--cache-l1-max-memory-bytes` (or programmatically via `skipper.Options.ResponseCacheMaxMemoryBytes`).
@@ -2153,6 +2167,11 @@ flowchart TD
     H -->|304 refresh| R{Retained variant exists?}
     R -->|yes: merge headers and freshness<br/>retain status and payload| S
     R -->|no: skip refresh, no write| U
+    F -->|transport or incomplete body failure| T{Last-good variant within original SIE window?}
+    G -->|transport or incomplete body failure| T
+    H -->|500/502/503/504| T
+    T -->|yes: retain timestamps, no failed overwrite<br/>serve STALE for waiting GETs| S
+    T -->|no: ordinary origin error handling| U
     H -->|cacheable: write variant and Vary metadata<br/>Set warms L2 + L1<br/>min TTL: cache-l1-ttl vs entry.TTL| S
     H -->|Vary wildcard: no write or follower sharing| U[Independent origin response]
 ```
@@ -2201,10 +2220,13 @@ flowchart TD
 - `cache.reval_queue_depth`: Gauge, current number of pending revalidation jobs in the queue (sampled every 10s)
 - `cache.reval_wait_duration`: Histogram, time a revalidation job spent waiting in the queue before the worker picked it up
 - `cache.reval_dropped`: Counter, revalidation jobs dropped because the queue was full,
-  body read failed, a HEAD request cannot refresh a complete GET representation,
+  a HEAD request cannot refresh a complete GET representation,
   or original routing inputs are unavailable for pipeline replay
 - `cache.reval_error`: Counter, background revalidation preparation or fetch
-  failures, or an invalid backend URL required pipeline fallback
+  failures, incomplete response bodies, all HTTP 5xx origin responses, or an
+  invalid backend URL required pipeline fallback. A 5xx with a body-read error
+  counts once, regardless of cacheability or SIE eligibility. Counting 501/505
+  as errors does not make them eligible for stale fallback.
 - `cache.reval_duration`: Histogram, end-to-end duration of each background revalidation job
 - `cache.reval_backend_dispatch`: Counter, background revalidation fetches sent
   directly to the backend (force mode, static backend only). Direct-dispatched
