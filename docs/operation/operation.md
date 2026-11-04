@@ -2103,6 +2103,15 @@ request replay used to rerun routing and request filters.
 `Vary: *` on any field line prevents both storage and follower sharing, including
 in force mode and when `keyHeaders` match. Each follower fetches independently.
 
+Before dispatching a queued refresh, the worker silently checks that job's exact
+variant key. If its current entry was created at or after enqueueing and is still
+fresh, the obsolete job is skipped without fetching the origin. A newer entry
+for another variant does not suppress this refresh. Failed refreshes preserve
+the original timestamps, so queued retries remain eligible; a newer entry that
+has already expired also permits a retry. This suppression is process-local,
+not fleet-wide refresh coordination. Silent reads preserve storage timing,
+fault reporting and warming without adding lookup-outcome counters.
+
 Conditional background refresh sends the retained variant's ETag and Last-Modified
 validators. A `304 Not Modified` is never stored as a standalone response, including
 when replayed through the proxy pipeline. It updates the retained representation's
@@ -2154,6 +2163,9 @@ flowchart TD
     C -->|cache.l1_hit — fresh hit| S[Entry Served]
     C -->|cache.l2_miss| D{L2Storage}
     C -->|cache.stale hit — no l1_hit| D
+    S -->|stale response: enqueue refresh| Q{Exact variant refreshed since enqueue<br/>and still fresh?}
+    Q -->|yes: skip origin fetch| Z[Keep newer representation]
+    Q -->|no: refresh or retry| E
     D -->|cache.l2_hit — key found| S
     D -->|cache.l2_miss — key absent| E{Cache origin dispatch}
     D -->|cache.l2_get_error — error / timeout| E

@@ -318,7 +318,7 @@ func (s *cacheSpec) revalidationWorker() {
 			if job.filter != nil {
 				s.metrics.MeasureSince("cache.reval_wait_duration", job.enqueuedAt)
 				start := time.Now()
-				job.filter.revalidate(job.key, job.baseKey, job.req, job.identity, job.backendURL, job.outgoingHost)
+				job.filter.doRevalidateQueued(job)
 				s.metrics.MeasureSince("cache.reval_duration", start)
 			}
 		case <-s.ctx.Done():
@@ -354,7 +354,7 @@ type revalJob struct {
 	backendURL   string        // non-empty: dial here directly instead of looping through listenAddr
 	outgoingHost string        // Host header to send with backendURL; see requestDispatch
 	filter       *cacheFilter  // instance whose doRevalidate to call
-	enqueuedAt   time.Time     // wall-clock time the job entered the queue; used to measure wait time
+	enqueuedAt   time.Time     // queue time for wait measurement and refresh supersession
 }
 
 // cacheFilter does not implement filters.FilterCloser. The routing layer calls
@@ -1119,6 +1119,14 @@ func (f *cacheFilter) doRevalidate(key string, req *http.Request, backendURL, ou
 }
 
 func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Request, backendURL, outgoingHost string) {
+	f.revalidateAt(key, baseKey, req, identity, backendURL, outgoingHost, time.Time{})
+}
+
+func (f *cacheFilter) doRevalidateQueued(job revalJob) {
+	f.revalidateAt(job.key, job.baseKey, job.req, job.identity, job.backendURL, job.outgoingHost, job.enqueuedAt)
+}
+
+func (f *cacheFilter) revalidateAt(key, baseKey string, req, identity *http.Request, backendURL, outgoingHost string, enqueuedAt time.Time) {
 	if req == nil {
 		f.metrics.IncCounter("cache.reval_dropped")
 		log.Warn("cache: original request unavailable, skipping pipeline refresh")
@@ -1133,6 +1141,13 @@ func (f *cacheFilter) revalidate(key, baseKey string, req, identity *http.Reques
 		identity = snapshotCacheIdentity(req)
 	}
 	f.revalSF.Do(key, func() (any, error) { //nolint:errcheck
+		// Failed refreshes retain their timestamp, so queued retries remain eligible.
+		if !enqueuedAt.IsZero() {
+			if current, err := f.storage.GetSilent(context.Background(), key); err == nil && current != nil &&
+				!current.CreatedAt.Before(enqueuedAt) && time.Now().Before(current.CreatedAt.Add(current.TTL)) {
+				return nil, nil
+			}
+		}
 		req, err := f.prepareDispatch(req, backendURL, outgoingHost)
 		if err != nil {
 			f.metrics.IncCounter("cache.reval_error")
