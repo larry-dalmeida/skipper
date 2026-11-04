@@ -4200,6 +4200,12 @@ HEAD cache misses use ordinary proxy HEAD handling, not cold-miss coalescing,
 and never create a bodyless GET entry. HEAD-triggered background refreshes are
 skipped; a subsequent GET can refresh the complete representation.
 
+Conditional background refresh merges a `304 Not Modified` into the retained
+Vary variant, preserving its status, payload and unchanged representation headers
+([RFC 9111 §4.3.4](https://www.rfc-editor.org/rfc/rfc9111#section-4.3.4)).
+A bare 304 is never stored; eviction before the response arrives skips the refresh.
+See the [operation guide](../operation/operation.md#cache).
+
 Parameters:
 
 * `keyHeaders` – optional; comma-separated request header names folded into the
