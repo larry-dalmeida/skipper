@@ -64,6 +64,9 @@ func (f coalesceBarrierFilter) Request(ctx filters.FilterContext) {
 	ctx.SetOutgoingHost("virtual.origin.example")
 	req := ctx.Request()
 	req = req.WithContext(&coalesceBarrierContext{Context: req.Context(), joined: f.joined})
+	if req.Method == http.MethodHead {
+		req.Context().Done()
+	}
 	f.Filter.Request(dispatchContext{FilterContext: ctx, req: req})
 }
 
@@ -391,6 +394,7 @@ func TestCacheFilter_DispatchWildcardNotStored(t *testing.T) {
 					FRequest:    httptest.NewRequest("GET", "http://client.example/item", nil),
 					FBackendUrl: backend, FStateBag: make(map[string]any),
 				}
+				ctx.FOriginalRequest = ctx.FRequest
 				var calls int
 				f.fetch = func(*http.Request) (*http.Response, error) {
 					calls++
